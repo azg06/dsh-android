@@ -146,4 +146,37 @@ if ($releaseExists) {
 }
 if ($LASTEXITCODE -ne 0) { throw '创建 Release 失败' }
 
+# ── 6. 校验附件 ──────────────────────────────────────────────
+# gh 上传大文件时若网络中断，会静默失败甚至挂住（实测卡了 6 分钟），
+# 而脚本并不知情 —— 结果是 Release 建好但附件残缺，表面看却"成功"了。
+# 所以发布后必须逐项核对，缺什么补什么。
+Step 6 '校验 Release 附件'
+$expected = @($apk, $rt, $pl) | ForEach-Object { Split-Path $_ -Leaf }
+
+function Get-ReleaseAssets {
+    param([string]$T)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $raw = (& gh release view $T --json assets 2>$null | Out-String)
+    $ErrorActionPreference = $prev
+    if ($raw -notmatch '\[') { return @() }
+    try { return @((($raw | ConvertFrom-Json).assets) | ForEach-Object { $_.name }) }
+    catch { return @() }
+}
+
+for ($attempt = 1; $attempt -le 3; $attempt++) {
+    $actual = Get-ReleaseAssets -T $Tag
+    $missing = @($expected | Where-Object { $_ -notin $actual })
+    if ($missing.Count -eq 0) {
+        Write-Host ("  三项附件齐备（尝试 {0} 次）" -f $attempt) -ForegroundColor Green
+        break
+    }
+    Write-Host ("  缺少 {0} 项：{1}" -f $missing.Count, ($missing -join ', ')) -ForegroundColor Yellow
+    if ($attempt -eq 3) {
+        throw "附件仍不完整：$($missing -join ', ')。请检查网络后重跑本脚本（会自动补传）。"
+    }
+    Write-Host '  重试上传 …'
+    gh release upload $Tag $apk $rt $pl --clobber
+}
+
 Step '完成' "发布成功：$repoUrl/releases/tag/$Tag"
