@@ -25,32 +25,36 @@ function Step($n, $text) { Write-Host "`n[$n] $text" -ForegroundColor Cyan }
 
 # ── 0. 登录检查 ──────────────────────────────────────────────
 Step 0 '检查 GitHub 登录'
-# 注意：gh 会把状态信息写到 stderr，而 PowerShell 把原生命令的 stderr 当作
-# NativeCommandError 抛出 —— 在 $ErrorActionPreference='Stop' 下会直接把脚本打断。
-# 所以这里临时降级错误策略，并用退避码判断成败，而不是解析输出文本。
-$prevEap = $ErrorActionPreference
-$ErrorActionPreference = 'Continue'
-$login = ''
-try {
-    $login = (& gh api user -q .login 2>$null | Out-String).Trim()
-} catch {
-    $login = ''
+# 只检查本地是否存有 token，不联网验证。
+# 早先的实现调用 `gh api user` 做验证，结果网络一波动（GFW 下访问 api.github.com 常被
+# 中途重置，报 EOF）就会把整个发布打断 —— 而凭据其实好端端躺在配置里。
+# 真正的网络错误会在后面 push / release 时自然暴露，不需要在这里提前拦。
+$hostsFile = Join-Path $env:APPDATA 'GitHub CLI\hosts.yml'
+$tokenOk = $false
+$who = ''
+if (Test-Path $hostsFile) {
+    $raw = Get-Content $hostsFile -Raw
+    if ($raw -match 'oauth_token:\s*(\S+)') { $tokenOk = $true }
+    if ($raw -match 'user:\s*(\S+)') { $who = $Matches[1] }
 }
-$authOk = ($LASTEXITCODE -eq 0) -and $login -and ($login -notmatch 'message|401')
-$ErrorActionPreference = $prevEap
-
-if (-not $authOk) {
+if (-not $tokenOk) {
     throw @"
-GitHub 凭据无效或未登录。
+GitHub 未登录（本地没有凭据）。
 
-请在终端执行（浏览器授权，需 repo 权限）：
+请执行（二选一）：
 
-    gh auth login -h github.com
+  A) 终端交互登录
+     gh auth login -h github.com
 
-注意：网页版或其他客户端的登录状态与 gh CLI 是两套，互不影响。
+  B) 用 PAT（不依赖浏览器回调，更可靠）
+     gh auth login --with-token     然后粘贴 token
+     或直接写配置文件：
+     `$t = "token"
+     `$y = "github.com:``n    user: azg06``n    oauth_token: `$t``n    git_protocol: https``n"
+     [IO.File]::WriteAllText("`$env:APPDATA\GitHub CLI\hosts.yml", `$y, (New-Object Text.UTF8Encoding(`$false)))
 "@
 }
-Write-Host "  已登录：$login" -ForegroundColor Green
+Write-Host "  已登录：$who（凭据在本地，未联网校验）" -ForegroundColor Green
 
 # ── 1. 版本号 ────────────────────────────────────────────────
 $manifest = Join-Path $root 'DHS-Harness-Full\app\AndroidManifest.xml'

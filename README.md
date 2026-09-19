@@ -113,6 +113,7 @@ cd DHS-Harness-Full
 | A5 | `EACCES: permission denied, link …tmpdir…` | `@deepseek-ai/dsh-fs-local/lib/index.js` | 同上。**文件工具的「新建文件」路径**也走硬链接，android 下先用 `lstat` 复现 `EEXIST` 语义（保住 `createIfAbsent` 约定），再 `rename` |
 | A6 | `glob` / `grep` 报 `ripgrep provider failure` | `@deepseek-ai/dsh-tool-fs-search/lib/index.js` | `@vscode/ripgrep` 按 `process.platform` 拼包名（无 android 变体）→ 直接解析 `@vscode/ripgrep-linux-<arch>/bin/rg`，并在返回前补一次 `chmod 0755` |
 | A7 | 工作区选择器被锁在私有目录 | `@deepseek-ai/dsh-host-directory-picker-browse/lib/index.js` | 起点恒为 `homedir()`（私有目录），用户选不到公共目录 → 支持 `DSH_PICKER_ROOT` 环境变量覆盖起点 |
+| A8 | **发送附件报 `prompt rejected (session/agent-busy)`** | `@deepseek-ai/dsh-attachment-local/lib/index.js` | 同上，**附件持久化也走硬链接**，共两处：`publishImmutableAlias`（给已存在对象挂别名 → 用 `copyFile`，不能 `rename`，那会移走源）与 `publishStagedObject`（发布临时文件 → `rename` 等价）。**症状极易误判**：`link` 抛的 `EACCES` 不是 `AttachmentError`，被上游兜底 catch 归成 `agent-busy`，表面看像"会话忙"，实际是**所有类型的附件都发不出去** |
 
 > **A2 / A3 / A6 同源**：Android 上任何「按平台名或 libc 家族分派」的逻辑都会漏。
 > 更可靠的做法是在真机上做一次最小加载测试，而不是靠平台名推断。
