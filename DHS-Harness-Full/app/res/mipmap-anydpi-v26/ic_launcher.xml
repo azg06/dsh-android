@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自适应图标（Android 8.0+，本项目 minSdk 26，故所有目标设备均走这条路径）。
+
+  前景用位图（drawable-*dpi/ic_launcher_foreground.png）：内容是 AI 生成的科技感鲸鱼，
+  已按 108dp 画布、72dp 内容内缩导出 —— 系统会放大约 1.5 倍再按各厂商形状裁切，
+  内缩是为了保证裁切后主体完整。
+
+  背景取前景图自身的深空底色，两者同色，所以前景放大后看不出边界。
+  monochrome 层供 Android 13+ 主题图标使用。
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_bg" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <monochrome android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>

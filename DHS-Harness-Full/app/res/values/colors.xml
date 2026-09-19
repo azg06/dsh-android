@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="deepseek">#4D6BFE</color>
+    <color name="deepseek_dark">#3538CD</color>
+    <color name="bg">#F4F6FB</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="text_main">#101828</color>
+    <color name="text_sub">#667085</color>
+    <color name="text_on_accent">#FFFFFF</color>
+    <color name="danger">#D92D20</color>
+    <!-- 系统状态栏：与 Web UI 顶栏同色，避免那条突兀的品牌蓝横在最上方 -->
+    <color name="status_bar">#121316</color>
+    <color name="nav_bar">#121316</color>
+    <!-- 应用图标底色：取自图标前景图自身的深空背景，两层同色以免看出边界 -->
+    <color name="ic_launcher_bg">#0F0E27</color>
+</resources>

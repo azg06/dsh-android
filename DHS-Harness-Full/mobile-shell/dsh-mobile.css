@@ -1,0 +1,478 @@
+/* =============================================================================
+ * DeepSeek Harness · Android 移动端外壳层（样式）
+ * -----------------------------------------------------------------------------
+ * 零侵入：官方构建产物一字不改，本文件作为独立层追加，出问题删掉即可回滚。
+ *
+ * 选择器只用本层自己写入的 data-dsh-* 属性，不依赖 CSS Module 哈希类名。
+ * 生效条件：html[data-dsh-mobile]（窄屏时由 dsh-mobile.js 写入）
+ * ========================================================================== */
+
+html[data-dsh-mobile] {
+  --dsh-m-topbar: 46px;
+  --dsh-m-safe-top: env(safe-area-inset-top, 0px);
+  --dsh-m-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --dsh-m-safe-left: env(safe-area-inset-left, 0px);
+  --dsh-m-safe-right: env(safe-area-inset-right, 0px);
+  --dsh-m-ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --dsh-m-dur: 260ms;
+  --dsh-m-surface: var(--dsw-specific-sidebar-fill, var(--dsw-alias-bg-base, #1b1c1f));
+  --dsh-m-line: var(--dsw-alias-border-l1, rgba(128, 128, 128, 0.24));
+  --dsh-m-scrim: rgba(0, 0, 0, 0.44);
+}
+
+html[data-dsh-mobile],
+html[data-dsh-mobile] body {
+  overflow-x: hidden;
+  overscroll-behavior-y: none;
+}
+
+html[data-dsh-mobile] * {
+  -webkit-tap-highlight-color: transparent;
+}
+
+html[data-dsh-mobile] button,
+html[data-dsh-mobile] a,
+html[data-dsh-mobile] [role='button'] {
+  touch-action: manipulation;
+}
+
+/* 16px 可避免移动浏览器聚焦输入框时自动放大整页 */
+html[data-dsh-mobile] input,
+html[data-dsh-mobile] textarea,
+html[data-dsh-mobile] select {
+  font-size: 16px !important;
+}
+
+/* -----------------------------------------------------------------------------
+ * 1. 三列 → 单列
+ * 官方用内联 style 写 grid-template-columns（未带 !important），故可被这里覆盖。
+ * -------------------------------------------------------------------------- */
+html[data-dsh-mobile] [data-dsh-col='frame'] {
+  grid-template-columns: 0 minmax(0, 1fr) 0 !important;
+  overflow: visible;
+}
+
+/* 关键：侧栏与右栏改成 fixed 后脱离 grid 流，在流的子元素只剩中间列，
+ * 自动放置算法会把它塞进第 1 条轨道（宽度 0）→ 整页空白。必须显式钉在第二列。 */
+html[data-dsh-mobile] [data-dsh-col='center'] {
+  grid-column: 2 / 3 !important;
+  grid-row: 1 !important;
+  box-sizing: border-box;
+  padding-top: calc(var(--dsh-m-topbar) + var(--dsh-m-safe-top));
+}
+
+/* 桌面用的拖拽分隔条在移动端无意义 */
+html[data-dsh-mobile] [data-dsh-col='handle'] {
+  display: none !important;
+}
+
+/* -----------------------------------------------------------------------------
+ * 2. 侧边栏 → 左侧抽屉
+ * 开合沿用官方自身的折叠状态（窄屏下官方 toggle 本就是"展开/收起"语义）。
+ * -------------------------------------------------------------------------- */
+html[data-dsh-mobile] [data-dsh-col='sidebar'] {
+  position: fixed !important;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: min(86vw, 336px) !important;
+  max-width: 336px;
+  z-index: 60;
+  box-sizing: border-box;
+  padding-top: calc(var(--dsh-m-safe-top) + 8px) !important;
+  padding-bottom: calc(var(--dsh-m-safe-bottom) + 8px) !important;
+  padding-left: calc(12px + var(--dsh-m-safe-left)) !important;
+  border-right: 1px solid var(--dsh-m-line);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.42);
+  /* 关键：用 left 偏移而不是 transform。
+   * 官方的设置面板挂在侧栏子树里（[data-slot="sidebar.settings"] → panel，且 panel 是
+   * position:fixed），而 transform 会创建新的包含块 —— 那样 panel 的 fixed 就不再相对
+   * 视口，而是跟着侧栏一起被推出屏幕（实测 panel left 变成 -342）。
+   * left 不创建包含块，子树里的 fixed 元素仍以视口为基准。 */
+  left: -102%;
+  transition: left var(--dsh-m-dur) var(--dsh-m-ease);
+}
+
+html[data-dsh-mobile][data-dsh-sidebar='open'] [data-dsh-col='sidebar'] {
+  left: 0;
+}
+
+html[data-dsh-mobile] [data-dsh-col='sidebar'] button {
+  min-height: 44px;
+}
+
+/* -----------------------------------------------------------------------------
+ * 3. 右栏（工具调用详情 / diff / 终端输出）→ 全屏浮层
+ * 官方在手机宽度下把该轨道恒算成 0 并裁掉，这是"手机上看不了工具详情"的根因。
+ * -------------------------------------------------------------------------- */
+html[data-dsh-mobile] [data-dsh-col='rightbar'] {
+  position: fixed !important;
+  left: 0;
+  right: 0;
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  height: 100vh;
+  height: 100dvh;
+  z-index: 70;
+  box-sizing: border-box;
+  overflow: hidden !important;
+  border-left: none !important;
+  background: var(--dsw-alias-bg-base, #1b1c1f);
+  padding-top: var(--dsh-m-safe-top);
+  padding-bottom: var(--dsh-m-safe-bottom);
+  visibility: hidden;
+  /* 同侧栏：用 top 偏移而非 transform —— 官方的右栏内容里也挂着 fixed 层的子面板，
+   * transform 会把它们一并推出屏幕。 */
+  top: 100%;
+  transition:
+    top var(--dsh-m-dur) var(--dsh-m-ease),
+    visibility 0s linear var(--dsh-m-dur);
+}
+
+html[data-dsh-mobile][data-dsh-details='open'] [data-dsh-col='rightbar'] {
+  visibility: visible;
+  top: 0;
+  transition:
+    top var(--dsh-m-dur) var(--dsh-m-ease),
+    visibility 0s;
+}
+
+html[data-dsh-mobile] [data-dsh-col='rightbar'] > * {
+  height: 100%;
+  max-height: 100%;
+}
+
+html[data-dsh-mobile] [data-dsh-col='rightbar'] pre,
+html[data-dsh-mobile] [data-dsh-col='rightbar'] code {
+  overflow-x: auto;
+  max-width: 100%;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+html[data-dsh-mobile] [data-dsh-col='rightbar'] button {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+/* -----------------------------------------------------------------------------
+ * 4. 顶栏：工作区 / 会话的唯一常驻指示点
+ * -------------------------------------------------------------------------- */
+#dsh-m-topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: calc(var(--dsh-m-topbar) + var(--dsh-m-safe-top));
+  padding: var(--dsh-m-safe-top) calc(8px + var(--dsh-m-safe-right)) 0 calc(8px + var(--dsh-m-safe-left));
+  box-sizing: border-box;
+  /* 兜底值只用于首帧：实际背景/前景由 dsh-mobile.js 从官方元素读取后写成内联样式，
+   * 否则浅色模式下这里会残留深色，标题与图标糊成一片。 */
+  background: var(--dsw-alias-bg-base, #ffffff);
+  border-bottom: 1px solid var(--dsh-m-line);
+  color: var(--dsw-alias-label-primary, #0f1115);
+  font-size: 13px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+#dsh-m-topbar .dsh-m-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+#dsh-m-topbar .dsh-m-btn:active {
+  background: var(--dsw-alias-interactive-bg-hover, rgba(128, 128, 128, 0.18));
+}
+
+/* 单行排布：工作区在左、会话标题在右，省掉一行让顶栏更紧凑 */
+#dsh-m-topbar .dsh-m-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px;
+}
+
+#dsh-m-topbar .dsh-m-workspace {
+  flex: 0 1 auto;
+  max-width: 54%;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  margin-left: -4px;
+  padding: 2px 5px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  line-height: 15px;
+  /* 继承顶栏前景色再降透明度：写死颜色会在相反主题下不可读 */
+  color: inherit;
+  opacity: 0.72;
+  cursor: pointer;
+}
+
+#dsh-m-topbar .dsh-m-workspace:active {
+  background: var(--dsw-alias-interactive-bg-hover, rgba(128, 128, 128, 0.18));
+}
+
+#dsh-m-topbar .dsh-m-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.6;
+}
+
+/* 工作区未指派时高亮，别让用户自己去猜 */
+html[data-dsh-mobile][data-dsh-workspace='none'] #dsh-m-topbar .dsh-m-dot {
+  background: var(--dsw-alias-label-warning, #e8a33d);
+}
+
+html[data-dsh-mobile][data-dsh-workspace='none'] #dsh-m-topbar .dsh-m-workspace {
+  color: var(--dsw-alias-label-warning, #c47f18);
+  opacity: 1;
+}
+
+#dsh-m-topbar .dsh-m-workspace-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#dsh-m-topbar .dsh-m-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 16px;
+}
+
+/* 官方引导/对话框打开时它自带遮罩并接管点击：顶栏只留信息、不抢交互，
+ * 否则用户会以为"按钮点了没反应"（其实是被弹窗吞掉了）。 */
+html[data-dsh-modal] #dsh-m-topbar {
+  opacity: 0.32;
+  pointer-events: none;
+}
+
+/* -----------------------------------------------------------------------------
+ * 5. 抽屉遮罩
+ * -------------------------------------------------------------------------- */
+#dsh-m-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  background: var(--dsh-m-scrim);
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity var(--dsh-m-dur) var(--dsh-m-ease),
+    visibility 0s linear var(--dsh-m-dur);
+}
+
+/* 遮罩只在「用户主动从顶栏打开抽屉」时出现。
+ * 不能跟着 data-dsh-sidebar='open' 走 —— 官方自身也会在某些交互路径下展开侧栏，
+ * 那时内容是正常可用的，遮罩会平白挡住界面（表现为"正输入时突然被一层黑的盖住"）。 */
+html[data-dsh-mobile][data-dsh-scrim='on'] #dsh-m-scrim {
+  opacity: 1;
+  visibility: visible;
+  transition:
+    opacity var(--dsh-m-dur) var(--dsh-m-ease),
+    visibility 0s;
+}
+
+/* 右栏浮层打开时遮罩让位 */
+html[data-dsh-mobile][data-dsh-details='open'] #dsh-m-scrim {
+  opacity: 0;
+  visibility: hidden;
+}
+
+/* -----------------------------------------------------------------------------
+ * 6. 设置面板 → 顶部横向导航 + 全宽内容
+ *
+ * 官方设置面板是桌面横向布局：panel 为 row，左侧 nav 固定 188px，右侧内容区。
+ * 在手机上面板总宽只有 ~334px，导航一占就只剩 146px 给内容 —— 就是"挤成一坨"。
+ * 这里把它翻成"顶部横向可滚动导航 + 下方全宽内容"。
+ * -------------------------------------------------------------------------- */
+html[data-dsh-mobile] [data-dsh-settings] {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  max-width: 100vw !important;
+  height: 100vh !important;
+  max-height: 100dvh !important;
+  margin: 0 !important;
+  border-radius: 0 !important;
+  flex-direction: column !important;
+}
+
+/* 导航条改横向：一条可横滑的 tab 栏 */
+html[data-dsh-mobile] [data-dsh-settings] > nav {
+  flex: none !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  height: auto !important;
+  gap: 6px !important;
+  padding: 6px 8px !important;
+  box-sizing: border-box;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  border-right: none !important;
+  border-bottom: 1px solid var(--dsh-m-line) !important;
+  -webkit-overflow-scrolling: touch;
+}
+
+html[data-dsh-mobile] [data-dsh-settings] > nav > * {
+  flex: none !important;
+  width: auto !important;
+  max-width: none !important;
+}
+
+/* 顶部导航右侧给关闭按钮留出空间，避免遮住最后一个 tab */
+html[data-dsh-mobile] [data-dsh-settings] > nav {
+  padding-right: 56px !important;
+}
+
+/* 全屏面板的关闭按钮：面板变整屏后，官方"点面板外侧关闭"的路径被盖住了，
+ * 必须补一个显式出口，否则用户进了设置就出不来。 */
+html[data-dsh-mobile] [data-dsh-close] {
+  position: absolute !important;
+  top: calc(8px + var(--dsh-m-safe-top)) !important;
+  right: calc(8px + var(--dsh-m-safe-right)) !important;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary, #f5f6f7);
+  cursor: pointer;
+}
+
+html[data-dsh-mobile] [data-dsh-close]:active {
+  background: var(--dsw-alias-interactive-bg-hover, rgba(128, 128, 128, 0.18));
+}
+
+
+/* 里层列表必须也跟着横向 —— 只改 nav 不够：navList 仍是 column，
+ * 会把整条导航撑到近 190px 高（实测 nav 高 201px 就是这么来的）。 */
+html[data-dsh-mobile] [data-dsh-settings] > nav [class*='navList'] {
+  flex-direction: row !important;
+  align-items: center !important;
+  width: max-content !important;
+  max-width: none !important;
+  height: auto !important;
+  gap: 6px !important;
+}
+
+/* 每个 tab：宽度按内容，高度做成可触摸尺寸 */
+html[data-dsh-mobile] [data-dsh-settings] > nav [class*='navCell'] {
+  flex: 0 0 auto !important;
+  width: auto !important;
+  min-width: 0 !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  padding: 6px 12px !important;
+  box-sizing: border-box;
+  white-space: nowrap !important;
+  border-radius: 8px !important;
+}
+
+html[data-dsh-mobile] [data-dsh-settings] > nav * {
+  white-space: nowrap !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+}
+
+/* 横向条里不需要那个"设置"大标题 */
+html[data-dsh-mobile] [data-dsh-settings] > nav > [class*='navTitle'] {
+  display: none !important;
+}
+
+/* 内容区独占剩余空间，自身滚动 */
+html[data-dsh-mobile] [data-dsh-settings] > *:not(nav) {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box;
+  overflow-y: auto !important;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: calc(16px + var(--dsh-m-safe-bottom)) !important;
+}
+
+/* 设置项里的行：窄屏下让标签与控件上下排，避免互相挤压 */
+html[data-dsh-mobile] [data-dsh-settings] [class*='row'] {
+  flex-wrap: wrap !important;
+  max-width: 100% !important;
+}
+
+html[data-dsh-mobile] [data-dsh-settings] input,
+html[data-dsh-mobile] [data-dsh-settings] select,
+html[data-dsh-mobile] [data-dsh-settings] textarea {
+  max-width: 100% !important;
+  box-sizing: border-box;
+}
+
+/* -----------------------------------------------------------------------------
+ * 7. 窄屏通用修正
+ * -------------------------------------------------------------------------- */
+/* 通用弹窗限宽；设置面板已由上面第 6 节接管整屏，这里要排除它，
+ * 否则两条规则特异性相同、后者取胜，面板会被限成 100vw-20px。 */
+html[data-dsh-mobile] [role='dialog']:not([data-dsh-settings]) {
+  max-width: calc(100vw - 20px) !important;
+  max-height: calc(100vh - var(--dsh-m-safe-top) - var(--dsh-m-safe-bottom) - 24px) !important;
+}
+
+html[data-dsh-mobile] [role='menu'],
+html[data-dsh-mobile] [role='listbox'] {
+  max-width: calc(100vw - 16px) !important;
+}
+
+html[data-dsh-mobile] pre,
+html[data-dsh-mobile] [data-diff] {
+  overflow-x: auto !important;
+  max-width: 100%;
+}
+
+html[data-dsh-mobile] table {
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-dsh-mobile] [data-dsh-col='sidebar'],
+  html[data-dsh-mobile] [data-dsh-col='rightbar'],
+  #dsh-m-scrim {
+    transition: none !important;
+  }
+}

@@ -1,0 +1,29 @@
+# ── 构建产物 ────────────────────────────────────────────────
+DHS-Harness-Full/build/
+DHS-Harness-Full/dist/
+DHS-Harness-Full/payload-cache/
+
+# ── 大体积运行时与业务包（走 Release 附件，不入库）────────────
+# 仓库保持轻量：这两个目录解压后约 400MB，入库会让 clone 与每次更新都变得很重。
+# 需要它们请从本仓库的 Release 页下载 runtime.zip / payload.zip，
+# 或按 README 的「从零重建」一节自行准备。
+android-runtime/
+dsh-deploy-015/
+
+# ── 本地调试与探针产物 ──────────────────────────────────────
+_probe/
+*.log
+
+# ── 签名材料与证书（绝不入库）────────────────────────────────
+*.keystore
+*.jks
+*.pem
+*.pk8
+*.pk12
+
+# ── 编辑器 / 系统 ───────────────────────────────────────────
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
