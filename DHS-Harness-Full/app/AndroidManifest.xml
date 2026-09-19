@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.dsh.harness"
-    android:versionCode="50"
-    android:versionName="0.4.10">
+    android:versionCode="51"
+    android:versionName="0.4.11">
 
     <!-- targetSdk 28：允许执行应用私有目录内的 Node 二进制（与 Termux 策略一致） -->
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="28" />
