@@ -185,6 +185,30 @@ node '...\mobile-shell\tests\probe-overlay.mjs'  "..."   # 全屏覆盖元素扫
 
 ---
 
+## 8.5 发布（GitHub）
+
+- **仓库**：https://github.com/azg06/dsh-android
+- **发版方式**：`.\publish.ps1`
+  （登录检查 → 读版本号 → 完整打包 → 提交 → 建仓库/推送 → 建 Release → 传三个附件）
+- **仓库只放源码**（38 文件 / 0.45MB），**大文件走 Release 附件**：
+  APK（131.8MB，超 GitHub 单文件 100MB 硬限）+ `runtime.zip`（58MB）+ `payload.zip`（73.6MB）
+- **`.gitignore` 排除**：`android-runtime/`、`dsh-deploy-015/`、`_probe/`、`build/`、`dist/`、
+  `payload-cache/`、签名材料
+
+### 发版时容易踩的两个坑
+1. **`build-apk.ps1` 会复用 `payload-cache/` 里的 zip** —— 改完 payload 代码后必须先删对应缓存，
+   否则打出来的包不含改动。v0.4.8 就是这样把"附件功能坏掉"的版本发了出去。
+2. **GitHub 登录**：`gh auth login` 的浏览器流程在国内网络下容易超时/EOF。
+   最可靠的是写配置文件（**不联网**）：
+   ```powershell
+   $t = "token"
+   $y = "github.com:`n    user: azg06`n    oauth_token: $t`n    git_protocol: https`n"
+   [IO.File]::WriteAllText("$env:APPDATA\GitHub CLI\hosts.yml", $y, (New-Object Text.UTF8Encoding($false)))
+   ```
+   **必须用 `[IO.File]::WriteAllText` + 无 BOM 的 UTF8Encoding** ——
+   PS 5.1 的 `Set-Content -Encoding UTF8` 会写 BOM，`gh` 解析 YAML 会失败。
+   另：`publish.ps1` 的登录检查**只读本地 token、不联网**，避免网络波动打断发布。
+
 ## 9. 待办
 
 - [ ] **模型选择看不出当前模型** —— 需要探针定位官方模型选择元素，然后在顶栏显示（用户明确提过）
