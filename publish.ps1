@@ -25,12 +25,32 @@ function Step($n, $text) { Write-Host "`n[$n] $text" -ForegroundColor Cyan }
 
 # ── 0. 登录检查 ──────────────────────────────────────────────
 Step 0 '检查 GitHub 登录'
-$status = (gh auth status 2>&1 | Out-String)
-if ($status -match 'Failed to log in' -or $status -match 'token in .* is invalid') {
-    Write-Host $status
-    throw "GitHub 凭据无效。请先执行：  gh auth login -h github.com"
+# 注意：gh 会把状态信息写到 stderr，而 PowerShell 把原生命令的 stderr 当作
+# NativeCommandError 抛出 —— 在 $ErrorActionPreference='Stop' 下会直接把脚本打断。
+# 所以这里临时降级错误策略，并用退避码判断成败，而不是解析输出文本。
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$login = ''
+try {
+    $login = (& gh api user -q .login 2>$null | Out-String).Trim()
+} catch {
+    $login = ''
 }
-Write-Host '  已登录' -ForegroundColor Green
+$authOk = ($LASTEXITCODE -eq 0) -and $login -and ($login -notmatch 'message|401')
+$ErrorActionPreference = $prevEap
+
+if (-not $authOk) {
+    throw @"
+GitHub 凭据无效或未登录。
+
+请在终端执行（浏览器授权，需 repo 权限）：
+
+    gh auth login -h github.com
+
+注意：网页版或其他客户端的登录状态与 gh CLI 是两套，互不影响。
+"@
+}
+Write-Host "  已登录：$login" -ForegroundColor Green
 
 # ── 1. 版本号 ────────────────────────────────────────────────
 $manifest = Join-Path $root 'DHS-Harness-Full\app\AndroidManifest.xml'
@@ -77,7 +97,10 @@ if (-not $remote) {
     if ($LASTEXITCODE -ne 0) { throw '推送失败' }
 }
 
-$repoUrl = (gh repo view --json url -q .url 2>&1 | Out-String).Trim()
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$repoUrl = (& gh repo view --json url -q .url 2>$null | Out-String).Trim()
+$ErrorActionPreference = $prevEap
 Write-Host "  仓库：$repoUrl" -ForegroundColor Green
 
 # ── 5. Release ───────────────────────────────────────────────
@@ -105,12 +128,17 @@ DeepSeek Harness \`dsh\` $ver 的 Android 自包含封装 —— Node 运行时�
 构建方法、平台差异清单与已知限制见仓库 README。
 "@
 
-$existing = (gh release view $Tag 2>&1 | Out-String)
-if ($existing -match 'release not found|not found') {
-    gh release create $Tag $apk $rt $pl --title "DSH Android $Tag" --notes $notes
-} else {
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+(& gh release view $Tag 2>$null | Out-Null)
+$releaseExists = ($LASTEXITCODE -eq 0)
+$ErrorActionPreference = $prevEap
+
+if ($releaseExists) {
     Write-Host "  Release $Tag 已存在，补传附件"
     gh release upload $Tag $apk $rt $pl --clobber
+} else {
+    gh release create $Tag $apk $rt $pl --title "DSH Android $Tag" --notes $notes
 }
 if ($LASTEXITCODE -ne 0) { throw '创建 Release 失败' }
 
