@@ -132,6 +132,41 @@ node ..\verify-android-port.mjs dsh-deploy-015
 > 因而根本不会 `require` 这些包，直接落到 WASM 兜底 —— 删除零风险。
 > `@img/sharp-wasm32`（8.7 MB）必须保留。
 
+### 7. 运行时侧的裁剪：移除"存在但静默失败"的命令
+
+`android-runtime/` 是一套 **Termux bootstrap**。它自带一整套 Android 集成命令
+（`am` / `pkg` / `termux-open` / `termux-wake-lock` / `termux-backup` …），
+而这些命令依赖 **Termux 自己的 Java 组件**（`TermuxService` / `TermuxOpenReceiver` / am socket）——
+本应用**没有移植**它们。于是这些命令全部处于一种很危险的状态：
+
+> **存在 · `--help` 正常返回 · 实际什么都不做**
+
+**危害不是"没用"，而是"误导"**：模型看到命令存在会以为可用，而失败是**静默的**
+（`am --version` 返回 rc=0、零输出）—— 它会基于错误前提继续往下做。
+**一个不存在的命令，比一个假装能用的命令安全得多。**
+
+已移除（共 17 个命令 + `am.apk`）：
+
+| 类别 | 命令 |
+|---|---|
+| **数据破坏风险** | `termux-reset`（含 `rm -rf`）· `termux-fix-shebang`（把用户脚本 shebang 改成不存在的解释器） |
+| **依赖缺失的 Java 组件** | `am` · `pkg` · `termux-am` · `termux-am-socket` · `termux-open` · `termux-open-url` · `termux-wake-lock` · `termux-wake-unlock` · `termux-reload-settings` · `termux-setup-storage` · `termux-setup-package-manager` · `termux-change-repo` · `termux-info` · `termux-backup` · `termux-restore` |
+
+**必须保留**（被 `etc/profile` 调用或支撑 shebang）：
+`termux-apps-info-*` · `termux-scoped-env-variable*` · `termux-exec-*`
+
+**同时修正的路径问题**：`etc/profile`、`etc/bash.bashrc` 原本硬编码 Termux 默认前缀
+（`/data/data/com.termux/...`），在本应用里**恒不命中** —— 于是 `profile.pre`、
+`profile.d/*.sh`、`bash_completion` 从未被加载。改用 `$PREFIX`（启动时已正确设置）。
+
+> ⚠️ **一个容易忽略的连带风险**：修好 `profile` 的路径后，`profile.d/*.sh` 会
+> **第一次真正被执行** —— 原先"因为路径错所以从未加载"的脚本会突然生效。
+> 实测就抓到一个 `init-termux-properties.sh`（Termux UI 配置，路径全错且每次都会
+> `mkdir` 失败报错），已一并移除。**修复动作本身会引入新风险，改完必须验证。**
+
+这两类检查（命令清单 + `etc/` 全域活代码路径）都已纳入
+`verify-android-port.mjs`，构建时自动拦截。
+
 ---
 
 ## Android 平台差异清单

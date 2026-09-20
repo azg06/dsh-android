@@ -14,7 +14,7 @@
  *   node verify-android-port.mjs [payload目录]     默认 dsh-deploy-015
  *   node verify-android-port.mjs --zip <payload.zip>   直接校验打包产物（推荐）
  */
-import { readFileSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, statSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
@@ -190,6 +190,91 @@ if (!zipPath) {
   if (existsSync(nativeLinux)) {
     console.log('  [i] 图片处理 · 原生 linux 包仍在（不影响功能，但白占 35MB）');
   }
+}
+
+// ── runtime 侧检查 ───────────────────────────────────────────
+// android-runtime 是 Termux bootstrap，它自带一整套 Android 集成命令
+// （am / pkg / termux-open / termux-wake-lock / termux-backup …）。
+// 这些命令依赖 Termux 自己的 Java 组件（TermuxService / TermuxOpenReceiver / am socket），
+// 而本应用**没有移植**这些组件 —— 于是它们全部"存在、--help 正常、实际静默失败"。
+//
+// 留着它们的危害不是"没用"，而是**误导**：模型看到命令存在会以为可用，
+// 失败又是静默的（rc=0、零输出），它会基于错误前提继续往下做。
+// 一个不存在的命令，比一个假装能用的命令安全。
+const runtimeDir = join(payloadRoot, '..', 'android-runtime');
+const runtimeBin = join(runtimeDir, 'files/usr/bin');
+
+const FORBIDDEN_IN_RUNTIME = [
+  ['termux-reset', '含 rm -rf，路径错位下行为不可预测'],
+  ['termux-fix-shebang', '会把用户脚本 shebang 改成不存在的解释器（数据破坏）'],
+  ['am', '依赖 app_process + termux-am，实测 SIGABRT'],
+  ['pkg', '依赖未打包的 apt/dpkg 后端，必然失败'],
+  ['termux-am', '依赖 am socket，组件不存在'],
+  ['termux-am-socket', '同上'],
+  ['termux-backup', '指向错误前缀'],
+  ['termux-restore', 'tar 解包目标路径错位，可能半损坏'],
+  ['termux-open', '依赖 TermuxOpenReceiver，组件不存在'],
+  ['termux-open-url', '同上'],
+  ['termux-wake-lock', '依赖 TermuxService，实测 SIGABRT'],
+  ['termux-wake-unlock', '同上'],
+  ['termux-reload-settings', '同上'],
+  ['termux-setup-storage', '同上'],
+  ['termux-setup-package-manager', '依赖 pkg'],
+  ['termux-change-repo', '依赖 dialog + 包管理'],
+  ['termux-info', '依赖 pkg'],
+];
+
+if (!zipPath && existsSync(runtimeBin)) {
+  console.log('runtime 侧检查\n');
+  for (const [name, why] of FORBIDDEN_IN_RUNTIME) {
+    if (existsSync(join(runtimeBin, name))) {
+      console.log(`  [x] runtime 不应包含 ${name} —— ${why}`);
+      failed++;
+    }
+  }
+
+  // etc/ 全域（含 profile.d/）：
+  //   · 活代码里不得残留 Termux 前缀
+  //   · .sh 的 shebang 不得指向不存在的解释器
+  //
+  // 注意 profile.d/ 必须一起查：profile 的路径修好后，这些脚本会**第一次真正被执行**，
+  // 原先"因为路径错所以从未加载"的文件会突然生效 —— 修复动作本身会引入新风险。
+  // （实测就抓到一个 init-termux-properties.sh，路径全错且每次都会 mkdir 失败报错。）
+  const etcDir = join(runtimeDir, 'files/usr/etc');
+  const walk = (dir) => {
+    const out = [];
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, e.name);
+      if (e.isDirectory()) out.push(...walk(full));
+      else out.push(full);
+    }
+    return out;
+  };
+  if (existsSync(etcDir)) {
+    for (const full of walk(etcDir)) {
+      const rel = full.slice(runtimeDir.length + 1).replace(/\\/g, '/');
+      const body = readFileSync(full, 'utf8');
+      const live = body
+        .split('\n')
+        .filter((line) => !/^\s*#/.test(line))
+        .join('\n');
+      const n = live.split('/data/data/com.termux').length - 1;
+      if (n > 0) {
+        console.log(`  [x] ${rel} 活代码残留 ${n} 处 /data/data/com.termux`);
+        failed++;
+      }
+      if (rel.endsWith('.sh')) {
+        const first = body.split('\n')[0];
+        if (first.startsWith('#!') && first.includes('com.termux')) {
+          console.log(`  [x] ${rel} 的 shebang 指向不存在的解释器：${first}`);
+          failed++;
+        }
+      }
+    }
+  }
+
+  if (failed === 0) console.log('  [ok] runtime 侧检查通过');
+  console.log();
 }
 
 console.log();
