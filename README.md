@@ -95,6 +95,43 @@ cd DHS-Harness-Full
 **注意**：改了 `android-runtime/` 或 `dsh-deploy-015/` 之后，必须删掉
 `payload-cache/` 下对应的 zip，否则会复用旧包。
 
+### 5. 移植自检（已接入构建流程）
+
+```powershell
+node ..\verify-android-port.mjs dsh-deploy-015
+```
+
+逐条核对 12 项平台补丁是否在位，**任何一项不合格即退出码 1**。
+`build-apk.ps1` 已在压缩 payload 之前自动调用它 —— **漏改会直接中止打包**。
+
+> **为什么必须有这个**：这个移植靠"就地替换 `node_modules` 里的若干文件"实现，
+> 而它的失败模式是**静默的**。本项目为此栽过两次：
+>
+> | 版本 | 事故 | 后果 |
+> |---|---|---|
+> | v0.4.9 | 改的是 `lib/types/commands.js`，但运行时加载的是 `lib/index.js`（bundle） | 改动完全未生效，现象与"没修"一模一样 |
+> | v0.4.11 | 把 `link` 改成 `rename`，漏了紧随其后的 `unlink` 清理 | 附件仍然全线失败，且磁盘状态会误导排查方向 |
+>
+> 两次都不是"想不到"，而是**没有机械化手段确认改动真的在位**。
+> 靠人眼核对 12 处锚点不可靠，靠注释里写"已实测"更不可靠。
+
+### 6. 体积优化（已做）
+
+以下内容在 Android 上**永远无法加载或不会被使用**，已从 payload 中移除：
+
+| 路径 | 体积 | 为什么可以删 |
+|---|---|---|
+| `node-pty.original/` | 25.6 MB | 含 Windows ConPTY 的 `.dll`/`.node`，纯死重 |
+| `@img/sharp-libvips-linux-arm64/` | 17.4 MB | glibc 版，Bionic 结构性不可用 |
+| `@img/sharp-libvips-linuxmusl-arm64/` | 17.8 MB | musl 版，同样不可用 |
+| `@img/sharp-linux-arm64/`、`linuxmusl-arm64/` | 0.8 MB | 同上 |
+
+**实测收益**：`payload.zip` 73.6 MB → **51.0 MB**，APK 131.8 MB → **109.3 MB**。
+
+> 删除前已核对 sharp 加载器：它按平台名 `switch`，**Android 无对应 case**，
+> 因而根本不会 `require` 这些包，直接落到 WASM 兜底 —— 删除零风险。
+> `@img/sharp-wasm32`（8.7 MB）必须保留。
+
 ---
 
 ## Android 平台差异清单
@@ -114,6 +151,8 @@ cd DHS-Harness-Full
 | A6 | `glob` / `grep` 报 `ripgrep provider failure` | `@deepseek-ai/dsh-tool-fs-search/lib/index.js` | `@vscode/ripgrep` 按 `process.platform` 拼包名（无 android 变体）→ 直接解析 `@vscode/ripgrep-linux-<arch>/bin/rg`，并在返回前补一次 `chmod 0755` |
 | A7 | 工作区选择器被锁在私有目录 | `@deepseek-ai/dsh-host-directory-picker-browse/lib/index.js` | 起点恒为 `homedir()`（私有目录），用户选不到公共目录 → 支持 `DSH_PICKER_ROOT` 环境变量覆盖起点 |
 | A8 | **发送附件报 `prompt rejected (session/agent-busy)`** | `@deepseek-ai/dsh-attachment-local/lib/index.js` | 同上，**附件持久化也走硬链接**，共两处：`publishImmutableAlias`（给已存在对象挂别名 → 用 `copyFile`，不能 `rename`，那会移走源）与 `publishStagedObject`（发布临时文件 → `rename` 等价）。**症状极易误判**：`link` 抛的 `EACCES` 不是 `AttachmentError`，被上游兜底 catch 归成 `agent-busy`，表面看像"会话忙"，实际是**所有类型的附件都发不出去** |
+| A9 | **附件报 `ATTACHMENT_WRITE_FAILED`（对象其实已落盘）** | 同上，`publishStagedObject` 的清理行 | **A8 的配套陷阱**：把提交从 `link` 改成 `rename` 后，源目录项已被**移走**，但紧随其后的 `await unlink(staged.path)` 没跟着改 → 必然 `ENOENT` → 被外层包成 `ATTACHMENT_WRITE_FAILED`。**磁盘上的表现极具误导性**：对象已按内容摘要正确写入、`tmp/` 为空、操作却报失败（且 `chmod 0400` 与目录 fsync 被一并跳过）。修法是换成同文件的 `removeTemporary()`（只吞 `ENOENT`，其余照抛）。**改 `link`→`rename` 时必须同步检查配套清理** |
+| A10 | 附件报 `EACCES: open '/data/user/0'` | 同上，`ensureDurableHome` | 它用 `parse(home).root`（即 `/`）作上溯边界，为"崩溃可恢复"一路 fsync 所有祖先。桌面 Linux 合法，但 **`/data/user/0` 是全部应用的父目录，普通应用无权访问** → 附件保存失败。Android 下把边界收到应用包目录（`dirname(dirname(home))`） |
 
 > **A2 / A3 / A6 同源**：Android 上任何「按平台名或 libc 家族分派」的逻辑都会漏。
 > 更可靠的做法是在真机上做一次最小加载测试，而不是靠平台名推断。

@@ -87,6 +87,27 @@ $versionName = '0.0.0'
 if ($versionMatch.Success) { $versionName = $versionMatch.Groups[1].Value }
 $finalApk = Join-Path $OutDir ('DeepSeekHarness-Full-Android-v{0}.apk' -f $versionName)
 
+# ---------- 0. 移植自检（有补丁缺失即中止）----------
+# 这个移植靠"就地替换 node_modules 里的若干文件"实现，历史上两次栽在"以为改了其实没改"：
+#   · v0.4.9  改的是 lib/types/commands.js，而运行时加载的是 lib/index.js（bundle）
+#   · v0.4.11 把 link 改成 rename，却漏了紧随其后的 unlink 清理，附件仍然全线失败
+# 两次都不是想不到，而是没有机械化手段确认改动真的在位。所以在压缩 payload 之前
+# 先逐条核对补丁锚点 —— 不通过就不该继续打包。
+if (-not $SkipPayload) {
+    $verifyScript = Join-Path (Split-Path $projectRoot -Parent) 'verify-android-port.mjs'
+    if (Test-Path $verifyScript) {
+        Write-Host '移植自检 ...'
+        $nodeExe = (Get-Command node -ErrorAction SilentlyContinue).Source
+        if (-not $nodeExe) { $nodeExe = 'node' }
+        & $nodeExe $verifyScript $DeployDir
+        if ($LASTEXITCODE -ne 0) {
+            throw '移植自检未通过：有平台补丁缺失，已中止打包（详见上方输出）'
+        }
+    } else {
+        Write-Host "  [warn] 未找到 $verifyScript，跳过自检"
+    }
+}
+
 # ---------- 0. 打包运行时与 dsh 部署为 zip ----------
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
