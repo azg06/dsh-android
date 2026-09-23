@@ -143,8 +143,22 @@ if (-not $SkipPayload) {
 Write-Host '[1/5] 编译资源 ...'
 & $aapt2 compile --dir $resDir -o $compiledRes
 if ($LASTEXITCODE -ne 0) { throw 'aapt2 compile 失败' }
-& $aapt2 link -o $unsignedApk -I $androidJar --manifest $manifest --java $genDir `
-    --min-sdk-version 26 --target-sdk-version 28 $compiledRes
+# -A 指定 Android 的 assets 目录。
+# 之前漏了这个参数，app/assets/ 下的文件从未进过 APK —— 而且极难发现：构建一路成功、
+# APK 能装能跑，只有运行时读 assets 才抛 FileNotFoundException，表现为"功能莫名缺失"。
+# 注意别与 $assetsDir 混淆：那是 build/assets，装 runtime.zip 与 payload.zip 的中间目录。
+$aapt2Link = @(
+    'link', '-o', $unsignedApk, '-I', $androidJar,
+    '--manifest', $manifest, '--java', $genDir,
+    '--min-sdk-version', '26', '--target-sdk-version', '28'
+)
+$appAssets = Join-Path $projectRoot 'app\assets'
+if (Test-Path $appAssets) {
+    $aapt2Link += @('-A', $appAssets)
+    Write-Host "  assets: $appAssets"
+}
+$aapt2Link += $compiledRes
+& $aapt2 @aapt2Link
 if ($LASTEXITCODE -ne 0) { throw 'aapt2 link 失败' }
 
 # ---------- 2. javac ----------

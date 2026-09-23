@@ -277,6 +277,57 @@ if (!zipPath && existsSync(runtimeBin)) {
   console.log();
 }
 
+// ── assets 投放链检查 ────────────────────────────────────────
+// app/assets/AGENTS.md 是模型"知道控制桥存在"的唯一途径：dsh 读工作区根目录的
+// AGENTS.md 作为 workspace instructions，而该文件由 HarnessProcess 在启动时从
+// assets 投放进工作区。这条链上有两个环节曾经断过，且**都不会报错**：
+//   ① aapt2 link 少了 -A，assets 被静默丢弃 → 运行时 FileNotFoundException
+//   ② 描述里的目录名与 build/assets（装 zip 的中间目录）撞车，容易改错地方
+if (!zipPath) {
+  const projectRoot = join(payloadRoot, '..', 'DHS-Harness-Full');
+  const agentMd = join(projectRoot, 'app/assets/AGENTS.md');
+  const buildScript = join(projectRoot, 'build-apk.ps1');
+
+  console.log('assets 投放链检查\n');
+
+  if (!existsSync(agentMd)) {
+    console.log('  [x] 缺少 app/assets/AGENTS.md —— 模型将看不到控制桥的用法说明');
+    failed++;
+  } else {
+    const body = readFileSync(agentMd, 'utf8');
+    // 说明里必须出现桥的关键信息，否则等于没写
+    for (const [needle, why] of [
+      ['DSH_ANDROID_BRIDGE_TOKEN', 'token 来源'],
+      ['DSH_ANDROID_BRIDGE_URL', '桥地址'],
+      ['/device/open', '打开应用端点'],
+      ['/device/apps', '查包名端点'],
+    ]) {
+      if (!body.includes(needle)) {
+        console.log(`  [x] AGENTS.md 未提及 ${needle}（${why}）`);
+        failed++;
+      }
+    }
+  }
+
+  if (existsSync(buildScript)) {
+    const script = readFileSync(buildScript, 'utf8');
+    if (!/'-A'\s*,\s*\$appAssets|-A \$appAssets/.test(script)) {
+      console.log("  [x] build-apk.ps1 的 aapt2 link 缺少 -A（assets 会被静默丢弃）");
+      failed++;
+    }
+  }
+
+  // 投放代码必须在位
+  const hp = join(projectRoot, 'app/src/com/dsh/harness/HarnessProcess.java');
+  if (existsSync(hp) && !readFileSync(hp, 'utf8').includes('deployAgentInstructions')) {
+    console.log('  [x] HarnessProcess 未调用 deployAgentInstructions（说明不会被投放）');
+    failed++;
+  }
+
+  if (failed === 0) console.log('  [ok] assets 投放链完整');
+  console.log();
+}
+
 console.log();
 if (failed > 0) {
   console.error(`移植自检未通过：${failed} 项不合格 —— 构建应当中止。\n`);

@@ -2,8 +2,13 @@ package com.dsh.harness;
 
 import android.content.Context;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
@@ -37,6 +42,52 @@ public final class HarnessProcess {
 
     /** 用于 pkill 匹配的入口特征串；越独特越安全。 */
     private static final String ENTRY_MARKER = "deepseek-ai/dsh/lib/bin.js";
+
+    /**
+     * 把 assets/AGENTS.md 投放到工作区根目录。
+     *
+     * dsh 的 dsh-agent-instructions 从 cwd 向上找项目根（标记是 .git），
+     * 一路到文件系统根都没找到就退回 cwd —— 所以放在工作区根即可被读到，
+     * 然后作为 workspace instructions 注入模型上下文。
+     *
+     * 仅在内容与应用内置版本不一致时覆盖：这份说明必须以应用为准，
+     * 用户改坏了会让模型按错误的端点用法去调控制桥。
+     * 投放失败不阻断启动（最坏情况只是模型少一份能力说明）。
+     *
+     * @param ctx 上下文，用于读 assets。
+     * @param workspace 公共工作区目录。
+     */
+    private static void deployAgentInstructions(Context ctx, File workspace) {
+        final String name = "AGENTS.md";
+        try {
+            File dst = new File(workspace, name);
+            byte[] want = readAllBytes(ctx.getAssets().open(name));
+            if (dst.isFile()) {
+                byte[] have = readAllBytes(new FileInputStream(dst));
+                if (java.util.Arrays.equals(have, want)) {
+                    return;
+                }
+            }
+            try (OutputStream out = new FileOutputStream(dst)) {
+                out.write(want);
+            }
+        } catch (Exception ignored) {
+            // 静默：说明文件缺失只影响模型对控制桥的认知，不该阻断服务启动
+        }
+    }
+
+    /** 读到 EOF。用于几 KB 的说明文件，不需要缓冲调优。 */
+    private static byte[] readAllBytes(InputStream in) throws IOException {
+        try (InputStream src = in) {
+            ByteArrayOutputStream buf = new ByteArrayOutputStream();
+            byte[] chunk = new byte[8192];
+            int n;
+            while ((n = src.read(chunk)) > 0) {
+                buf.write(chunk, 0, n);
+            }
+            return buf.toByteArray();
+        }
+    }
 
     /**
      * 启动 dsh web。
@@ -79,6 +130,13 @@ public final class HarnessProcess {
             cmd.add("--port");
             cmd.add(String.valueOf(HarnessPaths.PORT));
         }
+
+        // 把能力说明投放进工作区。
+        // dsh 会读工作区根目录的 AGENTS.md（候选还有 CLAUDE.md），内容作为
+        // workspace instructions 进入模型上下文 —— 这是模型**唯一**能知道
+        // "这座控制桥存在、怎么调用"的途径。没有它，桥的所有端点都存在但无人调用：
+        // 能力齐全、可发现性为零，表现出来就是"模型不会控制手机"。
+        deployAgentInstructions(ctx, workspace);
 
         ProcessBuilder pb = new ProcessBuilder(cmd);
         // cwd = 公共工作区：dsh 以 invoking directory 作为 workspace root，

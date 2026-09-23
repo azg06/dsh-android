@@ -7,6 +7,8 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.net.Uri;
 import android.os.BatteryManager;
 import android.os.Build;
@@ -33,6 +35,7 @@ import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -202,6 +205,7 @@ public class ControlBridge {
             if ("/update/apk".equals(path)) return installApk(req);
             if ("/device/info".equals(path)) return deviceInfo();
             if ("/device/battery".equals(path)) return battery();
+            if ("/device/apps".equals(path)) return listApps(query);
             if ("/device/open".equals(path)) return open(req);
             if ("/device/notify".equals(path)) return notifyUser(req);
             if ("/device/toast".equals(path)) return toast(req);
@@ -397,6 +401,52 @@ public class ControlBridge {
         return o.toString();
     }
 
+    /**
+     * 列出已安装的、带桌面入口的应用。
+     *
+     * 存在的理由：/device/open 需要**包名**，而包名无法从应用名推断 ——
+     * 模型知道「微信」却不知道 com.tencent.mm。没有这个端点它只能靠猜，
+     * 猜错的表现是「未找到应用」，看起来像权限问题，实则是能力缺失。
+     *
+     * @param query 原始 query string，可含 q=<关键词>（按应用名或包名做子串匹配）
+     * @return {"count":n,"apps":[{"package":"…","label":"…"}]}
+     */
+    private String listApps(String query) throws Exception {
+        String q = "";
+        for (String kv : query.split("&")) {
+            int eq = kv.indexOf('=');
+            if (eq > 0 && "q".equals(kv.substring(0, eq))) {
+                q = Uri.decode(kv.substring(eq + 1)).trim().toLowerCase(Locale.ROOT);
+            }
+        }
+        PackageManager pm = ctx.getPackageManager();
+        Intent main = new Intent(Intent.ACTION_MAIN, null);
+        main.addCategory(Intent.CATEGORY_LAUNCHER);
+        // 本应用 targetSdk 28，不受 Android 11 的包可见性限制，可直接枚举；
+        // 即便将来提升 targetSdk，Manifest 的 <queries> 也已声明了同样的 intent。
+        List<ResolveInfo> list = pm.queryIntentActivities(main, 0);
+        JSONArray arr = new JSONArray();
+        for (ResolveInfo ri : list) {
+            if (ri.activityInfo == null) continue;
+            String pkg = ri.activityInfo.packageName;
+            CharSequence labelCs = ri.loadLabel(pm);
+            String label = labelCs == null ? "" : labelCs.toString();
+            if (!q.isEmpty()
+                    && !label.toLowerCase(Locale.ROOT).contains(q)
+                    && !pkg.toLowerCase(Locale.ROOT).contains(q)) {
+                continue;
+            }
+            JSONObject o = new JSONObject();
+            o.put("package", pkg);
+            o.put("label", label);
+            arr.put(o);
+        }
+        JSONObject out = new JSONObject();
+        out.put("count", arr.length());
+        out.put("apps", arr);
+        return out.toString();
+    }
+
     private String open(JSONObject req) throws Exception {
         String url = req.optString("url", "");
         String pkg = req.optString("package", "");
@@ -562,6 +612,7 @@ public class ControlBridge {
         o.put("device", new JSONArray()
                 .put("GET  /device/info —— 机型/系统/工作区")
                 .put("GET  /device/battery —— 电量")
+                .put("GET  /device/apps?q=<关键词> —— 列出已安装应用的包名（open 之前先用它查）")
                 .put("POST /device/open {\"url\":\"…\"} 或 {\"package\":\"…\"}")
                 .put("POST /device/notify {\"title\":\"…\",\"text\":\"…\"}")
                 .put("POST /device/toast {\"text\":\"…\"}")
