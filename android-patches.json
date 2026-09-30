@@ -1,0 +1,123 @@
+{
+  "note": "由 gen-patch-rules.py 自动生成。find/replace 为磁盘真实字节，请勿手工编辑。",
+  "base": "0.1.5-rc.2 原版 -> 已打 Android 适配的 payload",
+  "count": 16,
+  "rules": [
+    {
+      "file": "node_modules/@deepseek-ai/dsh-attachment-local/lib/index.js",
+      "seq": 1,
+      "tag": "replace",
+      "find": "import { chmod, link, mkdir, open, readFile, rename, rm, unlink, writeFile } from \"node:fs/promises\";",
+      "replace": "import { chmod, copyFile, link, mkdir, open, readFile, rename, rm, unlink, writeFile } from \"node:fs/promises\";"
+    },
+    {
+      "file": "node_modules/@deepseek-ai/dsh-attachment-local/lib/index.js",
+      "seq": 2,
+      "tag": "replace",
+      "find": "\t\tawait ensureDurableDirectory(home, parse(home).root);",
+      "replace": "\t\t// 原实现用 parse(home).root（即文件系统根 \"/\"）作为上溯边界，一路 fsync 所有祖先。\n\t\t// 桌面 Linux 上没问题，但 Android 的 /data/user/0 是全部应用的父目录，\n\t\t// 普通应用无权访问 —— 遍历到那一级必然 EACCES，附件保存全线失败。\n\t\t// 这里把边界收到应用包目录（DSH_HOME 的上两级），再往上都不是本应用的地盘。\n\t\tconst boundary = process.platform === \"android\"\n\t\t\t? dirname(dirname(home))\n\t\t\t: parse(home).root;\n\t\tawait ensureDurableDirectory(home, boundary);"
+    },
+    {
+      "file": "node_modules/@deepseek-ai/dsh-attachment-local/lib/index.js",
+      "seq": 3,
+      "tag": "replace",
+      "find": "\t\t\tawait link(source, target);",
+      "replace": "\t\t\t// Android 10+ 禁止普通应用创建硬链接（link 直接 EACCES）。\n\t\t\t// 此处是为「已存在的不可变对象」再挂一个别名，语义上不能用 rename（会把源移走），\n\t\t\t// 故退化为复制：内容逐字节相同，读取侧完全透明。\n\t\t\tif (process.platform === \"android\") {\n\t\t\t\tawait copyFile(source, target);\n\t\t\t} else {\n\t\t\t\tawait link(source, target);\n\t\t\t}"
+    },
+    {
+      "file": "node_modules/@deepseek-ai/dsh-attachment-local/lib/index.js",
+      "seq": 4,
+      "tag": "replace",
+      "find": "\t\t\tawait link(staged.path, target);",
+      "replace": "\t\t\t// 同上：Android 禁硬链接。这里 staged 是一次性临时文件，\n\t\t\t// rename 的语义与 link 完全等价（都是把内容落到 target）。\n\t\t\tif (process.platform === \"android\") {\n\t\t\t\tawait rename(staged.path, target);\n\t\t\t} else {\n\t\t\t\tawait link(staged.path, target);\n\t\t\t}"
+    },
+    {
+      "file": "node_modules/@deepseek-ai/dsh-attachment-local/lib/index.js",
+      "seq": 5,
+      "tag": "replace",
+      "find": "\t\tawait unlink(staged.path);",
+      "replace": "\t\t// 桌面走 link：提交后 staged.path 仍有一个目录项，这里的清理是\"删掉多余的名字\"。\n\t\t// Android 走 rename：源目录项已被移走，裸 unlink 必然 ENOENT —— 而它不是\n\t\t// AttachmentError，会被外层 catch 包成 ATTACHMENT_WRITE_FAILED，\n\t\t// 于是\"对象其实已正确落盘\"却报失败，chmod 与目录 fsync 也一并被跳过。\n\t\t// removeTemporary 只吞 ENOENT、其余照抛，正是这里需要的语义。\n\t\tawait removeTemporary(staged.path);"
+    },
+    {
+      "file": "node_modules/@deepseek-ai/dsh-api-session-controller/lib/index.js",
+      "seq": 1,
+      "tag": "replace",
+      "find": "\t\t\t\tthrow new RemoteError(\"session/agent-busy\", \"prompt rejected\", { reason: String(error) });",
+      "replace": "\t\t\t\t// 原实现把所有非附件异常都归到 agent-busy，真实原因只藏在 reason 里，\n\t\t\t\t// 而前端只渲染 message —— 用户永远只看到\"会话忙\"，完全无法定位。\n\t\t\t\t// 这里把原始错误带进 message，让失败原因直接可见。\n\t\t\t\tthrow new RemoteError(\"session/agent-busy\", \"prompt rejected: \" + (error && error.message ? error.message : String(error)), { reason: String(error) });"
+    },
+    {
+      "file": "node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js",
+      "seq": 1,
+      "tag": "replace",
+      "find": "import { link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat, truncate } from \"node:fs/promises\";",
+      "replace": "import { link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, truncate } from \"node:fs/promises\";"
+    },
+    {
+      "file": "node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js",
+      "seq": 2,
+      "tag": "insert",
+      "find": "\ttry {\n\t\tawait internals.fs.link(staged, currentPath);",
+      "replace": "\t// Android 10+ 禁止普通应用创建硬链接，link() 会直接 EACCES。\n\t// 先用 lstat 保留\"目标已存在则返回 false\"的语义，再用 rename 原子发布。\n\tif (internals.platform === \"android\") {\n\t\ttry {\n\t\t\tawait internals.fs.lstat(currentPath);\n\t\t\treturn false;\n\t\t} catch {\n\t\t\t// 目标不存在，可以发布\n\t\t}\n\t\tawait internals.fs.rename(staged, currentPath);\n\t\tawait syncDirectory(dirname(currentPath), internals);\n\t\treturn true;\n\t}\n\ttry {\n\t\tawait internals.fs.link(staged, currentPath);",
+      "manual": true
+    },
+    {
+      "file": "node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js",
+      "seq": 3,
+      "tag": "replace",
+      "find": "\t\t\tawait link(tmp, finalPath);",
+      "replace": "\t\t\t// Android 10+ 禁止普通应用创建硬链接，link() 会直接 EACCES，进而让整个会话\n\t\t\t// 持久化失败（实测报错：EACCES: permission denied, link '...tmp' -> '...jsonl.zstd'）。\n\t\t\t// 这里退化为 rename：同样是原子替换，只是失去了 link 自带的\"拒绝覆盖已存在文件\"\n\t\t\t// 这一层原子保证 —— 上游 rejectExistingLog 已做前置存在性检查，接受该弱化。\n\t\t\tif (process.platform === \"android\") {\n\t\t\t\tawait rename(tmp, finalPath);\n\t\t\t} else {\n\t\t\t\tawait link(tmp, finalPath);\n\t\t\t}"
+    },
+    {
+      "file": "node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/worker.cjs",
+      "seq": 1,
+      "tag": "insert",
+      "find": "\ttry {\n\t\tawait internals.fs.link(staged, currentPath);",
+      "replace": "\t// Android 10+ 禁止普通应用创建硬链接，link() 会直接 EACCES。\n\t// 先用 lstat 保留\"目标已存在则返回 false\"的语义，再用 rename 原子发布。\n\tif (internals.platform === \"android\") {\n\t\ttry {\n\t\t\tawait internals.fs.lstat(currentPath);\n\t\t\treturn false;\n\t\t} catch {\n\t\t\t// 目标不存在，可以发布\n\t\t}\n\t\tawait internals.fs.rename(staged, currentPath);\n\t\tawait syncDirectory(dirname(currentPath), internals);\n\t\treturn true;\n\t}\n\ttry {\n\t\tawait internals.fs.link(staged, currentPath);",
+      "manual": true
+    },
+    {
+      "file": "node_modules/@deepseek-ai/dsh-fs-local/lib/index.js",
+      "seq": 1,
+      "tag": "replace",
+      "find": "\t\t\tawait linkFile(tempPath, absolutePath);",
+      "replace": "\t\t\t// Android 10+ 在 SELinux 层禁止 untrusted_app 创建硬链接（实测同目录 ln 亦 EACCES），\n\t\t\t// 而 link() 正是\"新建文件\"这条路的唯一提交手段 —— 结果是 write 工具任何落盘都失败。\n\t\t\t// 这里手工复现 link 的 EEXIST 语义后改用 rename：同为原子替换，\n\t\t\t// 且不破坏 createIfAbsent\"目标已存在即失败\"的约定。\n\t\t\tif (platform === \"android\") {\n\t\t\t\tlet exists = true;\n\t\t\t\ttry {\n\t\t\t\t\tawait lstat(absolutePath);\n\t\t\t\t} catch (error) {\n\t\t\t\t\tif (isENOENT(error)) exists = false;\n\t\t\t\t\telse throw error;\n\t\t\t\t}\n\t\t\t\tif (exists) {\n\t\t\t\t\tconst conflict = new Error(`EEXIST: file already exists, link '${tempPath}' -> '${absolutePath}'`);\n\t\t\t\t\tconflict.code = \"EEXIST\";\n\t\t\t\t\tconflict.errno = -17;\n\t\t\t\t\tconflict.syscall = \"link\";\n\t\t\t\t\tconflict.path = absolutePath;\n\t\t\t\t\tthrow conflict;\n\t\t\t\t}\n\t\t\t\tawait rename(tempPath, absolutePath);\n\t\t\t} else {\n\t\t\t\tawait linkFile(tempPath, absolutePath);\n\t\t\t}"
+    },
+    {
+      "file": "node_modules/@deepseek-ai/dsh-tool-fs-search/lib/index.js",
+      "seq": 1,
+      "tag": "insert",
+      "find": "\t\tconst dependency = (await import(\"@vscode/ripgrep\")).rgPath;",
+      "replace": "\t\t// Android 的 Node 是 Linux ABI，但 process.platform 是 'android'，\n\t\t// 而 @vscode/ripgrep 按平台拼包名（optionalDependencies 里没有 android 变体），\n\t\t// 会抛 \"Could not find @vscode/ripgrep-android-arm64\"，令 glob/grep 完全不可用。\n\t\t// 这里直接解析随包分发的 linux-<arch> 二进制，绕开它的平台拼名。\n\t\tif (process.platform === \"android\") {\n\t\t\tconst { createRequire } = await import(\"node:module\");\n\t\t\tconst manifest = createRequire(import.meta.url)\n\t\t\t\t.resolve(`@vscode/ripgrep-linux-${process.arch}/package.json`);\n\t\t\tconst rg = join(parse(manifest).dir, \"bin\", \"rg\");\n\t\t\t// 兜底补可执行位：zip 在 Windows 上打包不带 Unix mode，解压后常是 600，\n\t\t\t// spawn 会直接 EACCES（表现为 \"ripgrep provider failure\"）。\n\t\t\t// App 侧解压器已经会补，这里再保一道 —— 换打包机或重装时不会复发。\n\t\t\ttry {\n\t\t\t\tconst { chmod } = await import(\"node:fs/promises\");\n\t\t\t\tawait chmod(rg, 0o755);\n\t\t\t} catch {\n\t\t\t\t// 已可执行、或文件系统不允许改：交给 spawn 自己报错，别在这里吞掉真正的失败\n\t\t\t}\n\t\t\treturn rg;\n\t\t}\n\t\tconst dependency = (await import(\"@vscode/ripgrep\")).rgPath;",
+      "manual": true
+    },
+    {
+      "file": "node_modules/@deepseek-ai/dsh-host-directory-picker-browse/lib/index.js",
+      "seq": 1,
+      "tag": "replace",
+      "find": "\t\tconst home = homedir();",
+      "replace": "\t\t// 原实现恒以 homedir() 作为浏览起点。\n\t\t// 但 Android 上 HOME 必须指向应用私有目录（公共存储是 FUSE，不支持 symlink，\n\t\t// profile 引导会卡死启动），于是选择器被锁死在私有区：\n\t\t// 用户既看不到公共目录，停在起点直接点\"打开\"还会把工作区设成私有 HOME 本身，\n\t\t// 导致 Agent 的产出永远拿不到。\n\t\t// 允许用环境变量覆盖起点 —— App 侧会把它指向公共工作区。\n\t\tconst home = process.env.DSH_PICKER_ROOT || homedir();"
+    },
+    {
+      "file": "node_modules/@deepseek-ai/node-addon-system/lib/flock.js",
+      "seq": 1,
+      "tag": "replace",
+      "find": "    const { platform, arch } = process;",
+      "replace": "    const { arch } = process;\n    // Android 的 Node 运行时是 Linux ABI（Termux 构建），flock() 由 bionic 提供，\n    // 预编译产物也用 linux-arm64 那一份。原实现只认字面量 'linux'/'darwin'，\n    // 于是 Android 上一律抛 ERR_FLOCK_UNSUPPORTED_PLATFORM，会话持久化直接失败。\n    const platform = process.platform === 'android' ? 'linux' : process.platform;"
+    },
+    {
+      "file": "node_modules/@deepseek-ai/node-addon-system/lib/flock.js",
+      "seq": 2,
+      "tag": "replace",
+      "find": "        throw Object.assign(new Error(`flock is not supported on ${platform}-${arch}`), {",
+      "replace": "        throw Object.assign(new Error(`flock is not supported on ${process.platform}-${arch}`), {"
+    },
+    {
+      "file": "node_modules/@deepseek-ai/node-addon-system/lib/flock.js",
+      "seq": 3,
+      "tag": "insert",
+      "find": "    const errno = await new Promise((resolve) => {",
+      "replace": "    // Android 上直接放行。\n    // 该包的两份预编译产物都无法在 bionic 上加载：musl 版缺 __errno_location\n    // （bionic 不提供该符号，实测 dlopen 失败），glibc 版依赖 glibc 同样不可用。\n    // 而本应用内只跑一个 dsh 进程，会话文件不存在并发写 —— 少一层文件锁，\n    // 远好过让整个会话因加锁失败而跑不起来。\n    if (process.platform === 'android') {\n        return;\n    }\n    const errno = await new Promise((resolve) => {"
+    }
+  ],
+  "manualFixes": 3
+}

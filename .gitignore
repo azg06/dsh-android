@@ -27,3 +27,12 @@ _probe/
 *.iml
 .DS_Store
 Thumbs.db
+
+# ── payload 升级工作区（不入库）──────────────────────────────
+# 这些都是"构建新 payload"过程中产生的中间物：
+#   dsh-deploy-017/   新 payload 的完整 node_modules（474MB）
+#   _orig-015/        从 npm pack 解出的旧版原版包，用于 diff 出补丁规则
+#   dsh-payload-*.zip payload 打包产物（走 Release 附件或手动传输）
+dsh-deploy-017/
+_orig-015/
+dsh-payload-*.zip

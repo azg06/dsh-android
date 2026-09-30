@@ -169,6 +169,76 @@ node ..\verify-android-port.mjs dsh-deploy-015
 
 ---
 
+## 升级 dsh 版本（重打补丁）
+
+> **payload 不是原版 npm 包的拷贝。** 它装着 16 处 Android 平台适配
+> （见「Android 平台差异清单」）。**直接换成新版本会把适配全部丢掉，功能静默失效。**
+
+所以升级不是"下载新包就行"，而是"**装新版 → 重打补丁 → 自检**"。
+
+### 工具
+
+| 文件 | 作用 |
+|---|---|
+| `gen-patch-rules.py` | 从「旧版原版 vs 已打补丁版」**自动生成**补丁规则（Python `difflib`） |
+| `android-patches.json` | 规则清单，`find` / `replace` 是磁盘真实字节 |
+| `apply-android-fixes.mjs` | **幂等**应用器；锚点必须唯一，否则拒绝修改并报错退出 |
+| `probe-anchors.mjs` | 升级前探测锚点在新版是否存活 |
+| `verify-android-port.mjs` | 12 项移植自检 —— **不通过不得打包** |
+| `fix-manual-rules.py` | 手工校准自动生成失败的少数规则 |
+
+### 步骤
+
+```bash
+# 1) 装新版。必须 --ignore-scripts —— koffi 的 postinstall 在 Windows 上
+#    找不到预构建会转 CMake 编译，直接失败；而 Android 用的是预构建，不需要编译。
+mkdir dsh-deploy-018 && cd dsh-deploy-018
+#    写 package.json：{"dependencies":{"@deepseek-ai/dsh":"<新版本>"}}
+npm install --registry=https://registry.npmjs.org/ --ignore-scripts --no-audit --no-fund
+
+# 2) 手动补 arm64 原生包（npm 因 os/cpu 与构建机不匹配而不会装它们）
+#    @vscode/ripgrep-linux-arm64            缺它 glob/grep 全废（约 4.6MB）
+#    @koromix/koffi-linux-arm64             koffi 的 Linux/Android 载体
+#    @koromix/koffi-android-arm64           同上
+#    @deepseek-ai/node-addon-system-linux-arm64   flock 用
+#    node-addon-require-builtin-linux-arm64-gnu   require-builtin 用
+#    做法：npm pack <包>@<版本> → tar -xzf → 摆到 node_modules 对应位置
+
+# 3) 探测锚点（可选，用于提前知道哪些补丁需要人工介入）
+node probe-anchors.mjs dsh-deploy-018
+
+# 4) 打补丁
+node apply-android-fixes.mjs dsh-deploy-018
+
+# 5) 自检 —— 必须全绿
+node verify-android-port.mjs dsh-deploy-018
+```
+
+### 打包（交付给手机）
+
+```bash
+cd dsh-deploy-018
+tar -a -c -f ../dsh-payload-<版本>.zip package.json package-lock.json lib node_modules
+# 记录 SHA-256，手机端会自己算一遍比对
+```
+
+手机端由 Agent 通过控制桥完成替换：
+
+```bash
+TOK=$(grep -o 'name="bridge_token">[^<]*' \
+      /data/user/0/com.dsh.harness/shared_prefs/dsh_prefs.xml | sed 's/.*>//')
+curl -s -X POST -H "X-DSH-Token: $TOK" -H "Content-Type: application/json" \
+  -d '{"zip":"<设备上zip路径>","sha256":"<哈希>"}' \
+  http://127.0.0.1:3099/update/payload
+curl -s -X POST -H "X-DSH-Token: $TOK" -H "Content-Type: application/json" \
+  -d '{}' http://127.0.0.1:3099/service/restart
+```
+
+> ⚠️ **升级前必须备份旧 payload**。0.1.7 起 Session 日志会升到 V4，
+> **回滚后旧版本读 V4 日志可能异常** —— 不可干净回滚。
+
+---
+
 ## Android 平台差异清单
 
 **这一节是本项目最核心的部分。** Android 与桌面 Linux 的差异会以各种形式让服务起不来，
