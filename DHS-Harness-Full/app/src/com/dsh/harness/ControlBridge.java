@@ -22,19 +22,18 @@ import android.widget.Toast;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
@@ -119,13 +118,35 @@ public class ControlBridge {
     private void serve(Socket client) {
         try {
             client.setSoTimeout(20000);
-            BufferedReader in = new BufferedReader(
-                    new InputStreamReader(client.getInputStream(), StandardCharsets.UTF_8));
-            String requestLine = in.readLine();
-            if (requestLine == null || requestLine.trim().isEmpty()) {
+
+            // ★ 必须用原始 InputStream 按【字节】读，不能包 BufferedReader。
+            // BufferedReader 是字符流：它既会把 body 一并预读进内部缓冲（导致后面按字节
+            // 读不到数据），又让上层拿到的长度语义变成"字符数"—— 而 Content-Length 是字节数。
+            // 中文一个字 3 字节，两者不等，body 永远读不满，表现为 20 秒后 "Read timed out"。
+            // （历史现象：/update/payload 的 body 是 base64 纯 ASCII，字节数恰好等于字符数，
+            //   所以这个 bug 潜伏了很久只在含中文的请求上暴露。）
+            InputStream in = client.getInputStream();
+
+            // 逐字节读到 header 结束（\r\n\r\n），避免任何字符解码带来的长度歧义
+            ByteArrayOutputStream headBuf = new ByteArrayOutputStream();
+            int hb;
+            while ((hb = in.read()) >= 0) {
+                headBuf.write(hb);
+                byte[] h = headBuf.toByteArray();
+                int n = h.length;
+                if (n >= 4 && h[n - 4] == '\r' && h[n - 3] == '\n' && h[n - 2] == '\r' && h[n - 1] == '\n') {
+                    break;
+                }
+                if (n > 64 * 1024) {
+                    return; // 畸形请求，放弃
+                }
+            }
+            // header 是 ASCII/Latin-1（含中文路径时也是百分号编码），用 ISO-8859-1 解不会乱码
+            String[] headerLines = new String(headBuf.toByteArray(), StandardCharsets.ISO_8859_1).split("\r\n");
+            if (headerLines.length == 0 || headerLines[0].trim().isEmpty()) {
                 return;
             }
-            String[] parts = requestLine.split(" ");
+            String[] parts = headerLines[0].split(" ");
             if (parts.length < 2) {
                 return;
             }
@@ -134,8 +155,8 @@ public class ControlBridge {
 
             int contentLength = 0;
             String headerToken = null;
-            String line;
-            while ((line = in.readLine()) != null && !line.isEmpty()) {
+            for (int li = 1; li < headerLines.length; li++) {
+                String line = headerLines[li];
                 int colon = line.indexOf(':');
                 if (colon <= 0) {
                     continue;
@@ -164,7 +185,19 @@ public class ControlBridge {
                     write(client, 413, error("请求体过大"));
                     return;
                 }
-                body = readBody(in, contentLength);
+                // 严格按字节数读满。此时 in 是原始流，Semantics 与 Content-Length 一致。
+                body = new byte[contentLength];
+                int off = 0;
+                while (off < contentLength) {
+                    int n = in.read(body, off, contentLength - off);
+                    if (n < 0) {
+                        break;
+                    }
+                    off += n;
+                }
+                if (off < contentLength) {
+                    body = Arrays.copyOf(body, off);
+                }
             }
 
             String query = "";
@@ -682,21 +715,9 @@ public class ControlBridge {
         }
     }
 
-    private static byte[] readBody(BufferedReader in, int n) throws IOException {
-        ByteArrayOutputStream bos = new ByteArrayOutputStream(n);
-        char[] buf = new char[4096];
-        int remaining = n;
-        while (remaining > 0) {
-            int read = in.read(buf, 0, Math.min(buf.length, remaining));
-            if (read < 0) {
-                break;
-            }
-            byte[] chunk = new String(buf, 0, read).getBytes(StandardCharsets.UTF_8);
-            bos.write(chunk, 0, chunk.length);
-            remaining -= read;
-        }
-        return bos.toByteArray();
-    }
+    // 原 readBody(BufferedReader, int) 已移除：它把"字节数"当"字符数"消费，
+    // 含中文的请求体永远读不满（中文 3 字节/字），最终 20 秒超时报 "Read timed out"。
+    // body 现在在 serve() 里直接从原始 InputStream 按字节读。
 
     private static void write(Socket client, int code, String body) throws IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
