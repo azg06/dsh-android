@@ -495,9 +495,13 @@ public class HarnessService extends Service {
                 .addAction(new Notification.Action.Builder(
                         android.R.drawable.ic_menu_rotate, "重启", restart).build());
 
-        // 不确定进度条：让它在 Android 14+ 体现为"正在进行的活动"，
-        // 也是 ProgressStyle 之外唯一可用的、不依赖新 SDK 的进度表达。
-        builder.setProgress(0, 0, true);
+        // 这里**不要** setProgress(0, 0, true)。
+        // 它是不确定进度条，会在通知栏渲染成一条永远转不完的加载条 ——
+        // 而这条件通知是常驻的，用户会一直看到一个"正在进行"的假象，
+        // 误以为后台在下载或处理什么。它也没能起到预期作用：
+        // 上岛靠的是 miui.focus.param，与 setProgress 无关，所以这是纯多余的一行。
+        //
+        // 想表达"正在工作"请用 text 文案（"分析中…"），不要用进度条。
 
         Notification n = builder.build();
 
