@@ -49,7 +49,21 @@ public class HarnessService extends Service {
     public static final String STATE_STOPPED = "STOPPED";
 
     private static final String CHANNEL_ID = "dsh";
+    /**
+     * 前台服务常驻通知。
+     *
+     * ★ 这条**绝不能**带 `miui.focus.param`：小米把带该参数的通知当作"焦点通知"处理，
+     * 未获超级岛授权的应用会被系统**整条静默丢弃** —— 连通知栏都看不到。
+     * 前台服务通知消失还会让系统认为服务无通知而回收进程。所以它必须保持纯净。
+     */
     private static final int NOTIFICATION_ID = 1;
+    /**
+     * 状态 / 超级岛通知。
+     *
+     * 带 `miui.focus.param`，在**已获授权**的设备上会被渲染成超级岛 + 状态栏芯片；
+     * 未授权设备上被系统丢弃 —— 这是可接受的，因为状态同时也写进了上面那条常驻通知。
+     */
+    private static final int STATUS_NOTIFICATION_ID = 2;
     private static final int MAX_RESTARTS = 3;
 
     private volatile Process process;
@@ -86,12 +100,34 @@ public class HarnessService extends Service {
      * @param chip 状态栏芯片文案，可为空。
      * @return 是否成功投递（服务未运行时为 false）。
      */
-    public static boolean updateStatus(String title, String text, String chip) {
+    public static boolean updateStatus(String title, String text, String chip, String mode) {
         HarnessService s = instance;
         if (s == null) {
             return false;
         }
-        s.updateNotification(title, text, chip);
+        // mode 语义：
+        //   auto（默认）—— 双通道：① 前台通知改成同样文案（不带岛参数，任何设备保证可见）
+        //                          ② 另发一条带岛参数的通知（授权设备上升格为超级岛/状态栏芯片）
+        //   normal      —— 只更新前台通知，并清掉岛通知（已知未授权 / 不希望出现岛时用）
+        //   focus       —— 只发岛通知（授权设备上通知栏更干净；未授权时**完全不可见**）
+        //
+        // 为什么默认是 auto 而不是 focus：只发带岛参数的那条，在未授权设备上会被系统
+        // 整条丢弃 —— 用户既看不到岛也看不到通知，而桥仍返回 ok:true。本项目踩过这个坑，
+        // 是最难排查的一种失败模式。
+        boolean wantNormal = !"focus".equals(mode);
+        boolean wantIsland = !"normal".equals(mode);
+
+        if (wantNormal) {
+            s.updateNotification(title, text);
+        }
+        if (wantIsland) {
+            s.updateIslandNotification(title, text, chip);
+        } else {
+            NotificationManager nm = (NotificationManager) s.getSystemService(NOTIFICATION_SERVICE);
+            if (nm != null) {
+                nm.cancel(STATUS_NOTIFICATION_ID);
+            }
+        }
         return true;
     }
 
@@ -420,17 +456,20 @@ public class HarnessService extends Service {
     }
 
     private Notification buildNotification(String title, String text) {
-        return buildNotification(title, text, "");
+        return buildNotification(title, text, "", false);
     }
 
     /**
-     * 构造前台通知，并附带"灵动岛"信息。
+     * 构造一条通知。
      *
      * @param title 标题，同时作为大岛标题。
      * @param text 正文。
      * @param chip 状态栏芯片文案；空字符串则回退为 text。
+     * @param withIsland 是否附带小米焦点通知参数。
+     *        **前台服务通知必须传 false** —— 小米把带该参数的通知当作"焦点通知"，
+     *        未获授权的应用会被系统**整条静默丢弃**；前台通知消失还会导致服务被回收。
      */
-    private Notification buildNotification(String title, String text, String chip) {
+    private Notification buildNotification(String title, String text, String chip, boolean withIsland) {
         PendingIntent open = PendingIntent.getActivity(this, 0,
                 new Intent(this, MainActivity.class),
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
@@ -462,12 +501,18 @@ public class HarnessService extends Service {
 
         Notification n = builder.build();
 
-        // 小米超级岛 / 焦点通知：走 extras 里的 JSON，不需要任何新 SDK ——
-        // compileSdk 34 也能编译。系统不认识这个 key 时会直接忽略，零副作用。
-        try {
-            n.extras.putString("miui.focus.param", buildMiuiFocusParam(title, text, chip));
-        } catch (Throwable ignored) {
-            // 参数构造失败只影响岛的展示，不该让通知本身发不出去
+        if (withIsland) {
+            // 小米超级岛 / 焦点通知：走 extras 里的 JSON，不需要任何新 SDK（compileSdk 34 可编译）。
+            //
+            // ⚠️ 实测结论（2026-09-30，HyperOS + Android 17）：
+            // 带这个 key 的通知在**未获超级岛授权**的设备上会被系统**整条丢弃**，
+            // 并不是"岛的参数被忽略、通知照常显示"。所以它只能挂在专用通知上，
+            // 绝不能挂前台服务通知 —— 否则连通知栏都看不到，且前台通知消失会导致服务被回收。
+            try {
+                n.extras.putString("miui.focus.param", buildMiuiFocusParam(title, text, chip));
+            } catch (Throwable ignored) {
+                // 参数构造失败只影响岛的展示，不该让通知本身发不出去
+            }
         }
         return n;
     }
@@ -519,16 +564,30 @@ public class HarnessService extends Service {
         }
     }
 
-    /** 更新前台通知。名字不能叫 notify —— 那会与 Object.notify() 冲突。 */
+    /**
+     * 更新前台服务通知（**不带**岛参数）。
+     *
+     * 名字不能叫 notify —— 那会与 Object.notify() 冲突。
+     * 这条通知承载"服务在跑 + 当前状态"，是整个应用唯一的可见性保证，
+     * 因此永远不带 miui.focus.param（理由见 NOTIFICATION_ID 的注释）。
+     */
     private void updateNotification(String title, String text) {
-        updateNotification(title, text, "");
-    }
-
-    /** 更新前台通知，并指定状态栏芯片文案。 */
-    private void updateNotification(String title, String text, String chip) {
         NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         if (nm != null) {
-            nm.notify(NOTIFICATION_ID, buildNotification(title, text, chip));
+            nm.notify(NOTIFICATION_ID, buildNotification(title, text, "", false));
+        }
+    }
+
+    /**
+     * 发布「状态 / 超级岛」通知。
+     *
+     * 与前台服务通知使用**不同的 ID**：带 `miui.focus.param` 的通知在未授权设备上
+     * 会被系统整条丢弃，必须与"必须可见"的前台通知解耦，否则一损俱损。
+     */
+    private void updateIslandNotification(String title, String text, String chip) {
+        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        if (nm != null) {
+            nm.notify(STATUS_NOTIFICATION_ID, buildNotification(title, text, chip, true));
         }
     }
 

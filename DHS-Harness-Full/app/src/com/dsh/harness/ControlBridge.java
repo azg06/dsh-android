@@ -20,6 +20,7 @@ import android.os.VibratorManager;
 import android.widget.Toast;
 
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
@@ -620,19 +621,64 @@ public class ControlBridge {
         String title = req.optString("title", "");
         String text = req.optString("text", "");
         String chip = req.optString("chip", "");
+        String mode = req.optString("mode", "auto").trim().toLowerCase(Locale.ROOT);
         if (title.isEmpty() && text.isEmpty()) {
             return error("至少需要 title 或 text 之一");
         }
         if (title.isEmpty()) {
             title = "DeepSeek Harness";
         }
-        boolean ok = HarnessService.updateStatus(title, text, chip);
+        if (!"auto".equals(mode) && !"focus".equals(mode) && !"normal".equals(mode)) {
+            return error("mode 只能是 auto / focus / normal，收到: " + mode);
+        }
+        boolean ok = HarnessService.updateStatus(title, text, chip, mode);
         JSONObject o = new JSONObject();
         o.put("ok", ok);
+        o.put("mode", mode);
         if (!ok) {
             o.put("note", "前台服务未运行，状态未展示");
+        } else {
+            // 诚实说明：ok 只代表"已交给系统"，不代表系统渲染了。
+            // 小米超级岛需要开发者平台授权，未授权时焦点通知会被静默丢弃 ——
+            // 那种情况下状态仍会出现在普通通知里（mode=auto 的双通道设计）。
+            o.put("note", "已提交；焦点通知在未获小米超级岛授权的设备上会被系统丢弃，"
+                    + "此时状态只在通知栏可见（不会上岛）");
+            o.put("islandCapability", islandCapability());
         }
         return o.toString();
+    }
+
+    /**
+     * 启发式判断本机是否可能渲染小米超级岛。
+     *
+     * 小米没有提供"应用是否已获焦点通知授权"的公开查询接口（授权在开发者平台侧，
+     * 按签名校验），所以这里只能给出**能力线索**而不是确定结论：
+     *   · osVersion   —— 焦点通知协议版本，0 表示系统不支持或未开放
+     *   · featureFlag —— persist.sys.feature.island 系统属性
+     * 两者都拿到才算"具备基础条件"；具体渲染仍取决于是否在白名单/已授权。
+     *
+     * @return 供调用方判断的诊断信息。
+     */
+    private JSONObject islandCapability() throws JSONException {
+        JSONObject o = new JSONObject();
+        try {
+            Class<?> sp = Class.forName("android.os.SystemProperties");
+            Object flag = sp.getMethod("getBoolean", String.class, boolean.class)
+                    .invoke(null, "persist.sys.feature.island", false);
+            o.put("featureFlag", flag);
+        } catch (Throwable t) {
+            o.put("featureFlag", JSONObject.NULL);
+        }
+        try {
+            Object v = android.provider.Settings.System.getInt(
+                    ctx.getContentResolver(), "notification_focus_protocol", 0);
+            o.put("protocol", v);
+        } catch (Throwable t) {
+            o.put("protocol", JSONObject.NULL);
+        }
+        o.put("note", "启发式线索：需 featureFlag=true 且 protocol>0 才可能上岛；"
+                + "实际渲染还取决于应用是否已获小米超级岛授权（开发者平台侧，按签名校验）");
+        return o;
     }
 
     private String listDir(String query) throws Exception {
@@ -685,8 +731,10 @@ public class ControlBridge {
                 .put("POST /device/vibrate {\"ms\":240}")
                 .put("POST /device/share {\"text\":\"…\"}"));
         o.put("ui", new JSONArray()
-                .put("POST /ui/status {\"title\":\"…\",\"text\":\"…\",\"chip\":\"…\"} —— "
-                        + "把当前工作状态显示到通知栏/灵动岛/状态栏；chip 是状态栏芯片文案，要极短"));
+                .put("POST /ui/status {\"title\":\"…\",\"text\":\"…\",\"chip\":\"…\",\"mode\":\"auto|focus|normal\"} —— "
+                        + "把状态显示到通知栏 / 超级岛 / 状态栏。"
+                        + "mode 默认 auto＝双通道（通知栏必可见，同时尝试上岛）；"
+                        + "normal＝只发普通通知；focus＝只发焦点通知（未授权设备上完全不可见）"));
         o.put("fs", new JSONArray().put("GET /fs/list?path=<dir>"));
         return o.toString();
     }
