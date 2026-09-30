@@ -748,14 +748,18 @@ public class ControlBridge {
         o.put("publicStorageGranted", HarnessPaths.hasPublicStorage(ctx));
         o.put("bridge", "http://127.0.0.1:" + PORT + "/");
 
-        // 诊断 AGENTS.md 是否真的投放到位。
+        // 诊断 AGENTS.md 是否投放到位。
         // 这曾经是个完全静默的失败点：投放异常被吞、模型看不到说明、桥的端点无人调用，
-        // 而表面一切正常。把三处状态摆出来，一眼就能定位是哪一环断了。
+        // 而表面一切正常。现在把状态摆出来，一眼定位是哪一环断了。
+        //
+        // 注意作用域：实际生效的是 **$DSH_HOME/AGENTS.md**（dsh 的用户全局指令），
+        // 不是工作区里那份 —— 后者是早期版本投错位置的遗留物，会被自动清理。
         o.put("agentInstructionsDeploy", HarnessProcess.agentInstructionsStatus());
-        File agWorkspace = new File(HarnessPaths.workspace(ctx), "AGENTS.md");
-        o.put("agentsMdInWorkspace", agWorkspace.isFile() ? (agWorkspace.length() + " B") : "缺失");
-        File agHome = new File(HarnessPaths.home(ctx), "AGENTS.md");
-        o.put("agentsMdInHome", agHome.isFile() ? (agHome.length() + " B") : "缺失");
+        File agGlobal = new File(HarnessPaths.home(ctx), "AGENTS.md");
+        o.put("agentInstructionsGlobal", agGlobal.isFile() ? (agGlobal.length() + " B") : "缺失");
+        File agWs = new File(HarnessPaths.workspace(ctx), "AGENTS.md");
+        o.put("staleAgentsMdInWorkspace",
+                agWs.isFile() ? (agWs.length() + " B（旧版遗留，将自动清理）") : "无");
         return o.toString();
     }
 

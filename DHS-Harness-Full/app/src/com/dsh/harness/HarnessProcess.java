@@ -70,29 +70,55 @@ public final class HarnessProcess {
             return;
         }
 
-        // 投放两个位置：
-        //   ① 工作区根 —— dsh 的项目根解析从这里向上找，是设计上的正常路径；
-        //   ② HOME     —— 兜底：工作区可能被用户切换，或 dsh 实际 cwd 与预期不符。
-        // 原先只投 ① 且把异常全吞掉，结果是"模型看不到说明"却无从判断为什么。
-        File[] targets = {new File(workspace, name), new File(HarnessPaths.home(ctx), name)};
-        for (File dst : targets) {
-            try {
-                File parent = dst.getParentFile();
-                if (parent != null && !parent.isDirectory()) {
-                    parent.mkdirs();
-                }
-                if (dst.isFile() && java.util.Arrays.equals(readAllBytes(new FileInputStream(dst)), want)) {
-                    log.append(dst.getAbsolutePath()).append(" = 已是最新; ");
-                    continue;
-                }
-                try (OutputStream out = new FileOutputStream(dst)) {
+        // 只投放「用户全局指令」：$DSH_HOME/AGENTS.md。
+        //
+        // 这是 dsh 原生的全局作用域（dsh-agent-instructions 里的 userGlobal 路径），
+        // 与任何工作区无关 —— 用户换工作目录、开新会话，这份说明都还在。
+        //
+        // 为什么不再投「工作区根」：那是**项目级**作用域，dsh 要先向上找 .git 标记
+        // 才能定位项目根。用户把会话工作区设成子目录（如 DSH/222）时，实际生效的是
+        // 上层那个碰巧带 .git 的目录，行为不可预期；而且会在用户自己的项目目录里
+        // 留下一个本不属于它的文件。
+        //
+        // 控制桥是**应用级能力**，和"当前项目"没有关系，就该放在全局作用域。
+        File target = new File(HarnessPaths.home(ctx), name);
+        try {
+            File parent = target.getParentFile();
+            if (parent != null && !parent.isDirectory()) {
+                parent.mkdirs();
+            }
+            if (target.isFile()
+                    && java.util.Arrays.equals(readAllBytes(new FileInputStream(target)), want)) {
+                log.append(target.getAbsolutePath()).append(" = 已是最新（全局指令）; ");
+            } else {
+                try (OutputStream out = new FileOutputStream(target)) {
                     out.write(want);
                 }
-                log.append(dst.getAbsolutePath()).append(" = 已写入; ");
-            } catch (Exception e) {
-                log.append(dst.getAbsolutePath()).append(" = 失败(").append(e).append("); ");
+                log.append(target.getAbsolutePath()).append(" = 已写入（全局指令）; ");
             }
+        } catch (Exception e) {
+            log.append(target.getAbsolutePath()).append(" = 失败(").append(e).append("); ");
         }
+
+        // 清理早期版本遗留在工作区里的副本 —— 它现在是多余且具有误导性的：
+        // 用户会以为"这个文件是项目的一部分"，而且改了它并不会影响实际生效的那份。
+        try {
+            File stale = new File(workspace, name);
+            if (stale.isFile()) {
+                byte[] have = readAllBytes(new FileInputStream(stale));
+                if (java.util.Arrays.equals(have, want)) {
+                    // 内容一致，说明是我们自己投的，可以安全删除
+                    stale.delete();
+                    log.append(stale.getAbsolutePath()).append(" = 已清理旧副本; ");
+                } else {
+                    // 用户改过它，不动
+                    log.append(stale.getAbsolutePath()).append(" = 保留（用户已修改）; ");
+                }
+            }
+        } catch (Exception e) {
+            log.append("清理旧副本失败(").append(e).append("); ");
+        }
+
         agentInstructionsLog = log.toString();
     }
 
