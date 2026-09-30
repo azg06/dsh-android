@@ -747,6 +747,15 @@ public class ControlBridge {
         o.put("workspace", HarnessPaths.workspace(ctx).getAbsolutePath());
         o.put("publicStorageGranted", HarnessPaths.hasPublicStorage(ctx));
         o.put("bridge", "http://127.0.0.1:" + PORT + "/");
+
+        // 诊断 AGENTS.md 是否真的投放到位。
+        // 这曾经是个完全静默的失败点：投放异常被吞、模型看不到说明、桥的端点无人调用，
+        // 而表面一切正常。把三处状态摆出来，一眼就能定位是哪一环断了。
+        o.put("agentInstructionsDeploy", HarnessProcess.agentInstructionsStatus());
+        File agWorkspace = new File(HarnessPaths.workspace(ctx), "AGENTS.md");
+        o.put("agentsMdInWorkspace", agWorkspace.isFile() ? (agWorkspace.length() + " B") : "缺失");
+        File agHome = new File(HarnessPaths.home(ctx), "AGENTS.md");
+        o.put("agentsMdInHome", agHome.isFile() ? (agHome.length() + " B") : "缺失");
         return o.toString();
     }
 

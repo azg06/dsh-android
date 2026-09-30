@@ -59,21 +59,52 @@ public final class HarnessProcess {
      */
     private static void deployAgentInstructions(Context ctx, File workspace) {
         final String name = "AGENTS.md";
+        StringBuilder log = new StringBuilder();
+
+        byte[] want;
         try {
-            File dst = new File(workspace, name);
-            byte[] want = readAllBytes(ctx.getAssets().open(name));
-            if (dst.isFile()) {
-                byte[] have = readAllBytes(new FileInputStream(dst));
-                if (java.util.Arrays.equals(have, want)) {
-                    return;
-                }
-            }
-            try (OutputStream out = new FileOutputStream(dst)) {
-                out.write(want);
-            }
-        } catch (Exception ignored) {
-            // 静默：说明文件缺失只影响模型对控制桥的认知，不该阻断服务启动
+            want = readAllBytes(ctx.getAssets().open(name));
+        } catch (Exception e) {
+            // 不再静默：assets 读不到意味着说明永远到不了模型，必须留下痕迹
+            agentInstructionsLog = "assets 读取失败: " + e;
+            return;
         }
+
+        // 投放两个位置：
+        //   ① 工作区根 —— dsh 的项目根解析从这里向上找，是设计上的正常路径；
+        //   ② HOME     —— 兜底：工作区可能被用户切换，或 dsh 实际 cwd 与预期不符。
+        // 原先只投 ① 且把异常全吞掉，结果是"模型看不到说明"却无从判断为什么。
+        File[] targets = {new File(workspace, name), new File(HarnessPaths.home(ctx), name)};
+        for (File dst : targets) {
+            try {
+                File parent = dst.getParentFile();
+                if (parent != null && !parent.isDirectory()) {
+                    parent.mkdirs();
+                }
+                if (dst.isFile() && java.util.Arrays.equals(readAllBytes(new FileInputStream(dst)), want)) {
+                    log.append(dst.getAbsolutePath()).append(" = 已是最新; ");
+                    continue;
+                }
+                try (OutputStream out = new FileOutputStream(dst)) {
+                    out.write(want);
+                }
+                log.append(dst.getAbsolutePath()).append(" = 已写入; ");
+            } catch (Exception e) {
+                log.append(dst.getAbsolutePath()).append(" = 失败(").append(e).append("); ");
+            }
+        }
+        agentInstructionsLog = log.toString();
+    }
+
+    /**
+     * 上一次投放 AGENTS.md 的结果，供 {@code /status} 诊断。
+     * 形如 "/storage/emulated/0/DHS/AGENTS.md = 已写入; …"。
+     */
+    private static volatile String agentInstructionsLog = "(尚未执行)";
+
+    /** 取投放结果说明；诊断用。 */
+    public static String agentInstructionsStatus() {
+        return agentInstructionsLog;
     }
 
     /** 读到 EOF。用于几 KB 的说明文件，不需要缓冲调优。 */
