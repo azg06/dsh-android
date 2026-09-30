@@ -311,8 +311,17 @@ if (!zipPath) {
 
   if (existsSync(buildScript)) {
     const script = readFileSync(buildScript, 'utf8');
-    if (!/'-A'\s*,\s*\$appAssets|-A \$appAssets/.test(script)) {
+    // 锚点只认 '-A' 这个语义标记，不绑变量名 ——
+    // aapt2 的 assets 目录参数已从 $appAssets 换成字面量 'app\assets'
+    // （为了避开中文绝对路径的 ANSI 转换），绑变量名会自己制造假阳性。
+    if (!/'-A'/.test(script)) {
       console.log("  [x] build-apk.ps1 的 aapt2 link 缺少 -A（assets 会被静默丢弃）");
+      failed++;
+    }
+    // 同理：外部 exe 的路径必须是相对形式，否则中文路径会经 ANSI 转换变乱码。
+    // 只要脚本里还把 $projectRoot 拼出的绝对路径直接喂给 aapt2/javac，就说明有人改回去了。
+    if (/\$aapt2 compile --dir \$resDir /.test(script)) {
+      console.log('  [x] build-apk.ps1 的 aapt2 compile 又用回了绝对路径（中文路径会乱码）');
       failed++;
     }
   }

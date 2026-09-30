@@ -11,6 +11,9 @@ import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.IBinder;
 
+import org.json.JSONException;
+import org.json.JSONObject;
+
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -68,9 +71,34 @@ public class HarnessService extends Service {
     }
     private ControlBridge bridge;
 
+    /** 当前存活的服务实例，供控制桥推送状态用；未运行时为 null。 */
+    private static volatile HarnessService instance;
+
+    /**
+     * 由控制桥调用，更新通知里的 Agent 工作状态。
+     *
+     * 做成静态入口是因为桥在另一个类里，拿不到 Service 引用；
+     * 而状态展示必须落到那条**已经存在**的前台通知上 —— 另发一条会是两条通知，
+     * 且前台服务通知才是系统允许提升为 Live Update / 岛的那一条。
+     *
+     * @param title 标题。
+     * @param text 正文。
+     * @param chip 状态栏芯片文案，可为空。
+     * @return 是否成功投递（服务未运行时为 false）。
+     */
+    public static boolean updateStatus(String title, String text, String chip) {
+        HarnessService s = instance;
+        if (s == null) {
+            return false;
+        }
+        s.updateNotification(title, text, chip);
+        return true;
+    }
+
     @Override
     public void onCreate() {
         super.onCreate();
+        instance = this;
         createChannel();
         startForegroundCompat(buildNotification("正在初始化", "准备 DeepSeek Harness…"));
         try {
@@ -379,15 +407,30 @@ public class HarnessService extends Service {
         if (Build.VERSION.SDK_INT >= 26) {
             NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
             if (nm != null) {
+                // IMPORTANCE_DEFAULT 而非 LOW：Android 16 的 Live Updates 明确要求
+                // 通道不能是 IMPORTANCE_MIN；小米的焦点通知同样不会在低优先级通道上生效。
+                // 这条通道承载"Agent 正在干什么"，属于用户想一眼看到的状态。
                 NotificationChannel channel = new NotificationChannel(
-                        CHANNEL_ID, "DeepSeek Harness", NotificationManager.IMPORTANCE_LOW);
-                channel.setDescription("本地 dsh web 服务状态");
+                        CHANNEL_ID, "DeepSeek Harness", NotificationManager.IMPORTANCE_DEFAULT);
+                channel.setDescription("本地 dsh web 服务状态与 Agent 工作进度");
+                channel.setShowBadge(false);
                 nm.createNotificationChannel(channel);
             }
         }
     }
 
     private Notification buildNotification(String title, String text) {
+        return buildNotification(title, text, "");
+    }
+
+    /**
+     * 构造前台通知，并附带"灵动岛"信息。
+     *
+     * @param title 标题，同时作为大岛标题。
+     * @param text 正文。
+     * @param chip 状态栏芯片文案；空字符串则回退为 text。
+     */
+    private Notification buildNotification(String title, String text, String chip) {
         PendingIntent open = PendingIntent.getActivity(this, 0,
                 new Intent(this, MainActivity.class),
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
@@ -412,14 +455,80 @@ public class HarnessService extends Service {
                         android.R.drawable.ic_menu_close_clear_cancel, "停止", stop).build())
                 .addAction(new Notification.Action.Builder(
                         android.R.drawable.ic_menu_rotate, "重启", restart).build());
-        return builder.build();
+
+        // 不确定进度条：让它在 Android 14+ 体现为"正在进行的活动"，
+        // 也是 ProgressStyle 之外唯一可用的、不依赖新 SDK 的进度表达。
+        builder.setProgress(0, 0, true);
+
+        Notification n = builder.build();
+
+        // 小米超级岛 / 焦点通知：走 extras 里的 JSON，不需要任何新 SDK ——
+        // compileSdk 34 也能编译。系统不认识这个 key 时会直接忽略，零副作用。
+        try {
+            n.extras.putString("miui.focus.param", buildMiuiFocusParam(title, text, chip));
+        } catch (Throwable ignored) {
+            // 参数构造失败只影响岛的展示，不该让通知本身发不出去
+        }
+        return n;
+    }
+
+    /**
+     * 构造小米超级岛参数（澎湃 OS 的"灵动岛"）。
+     *
+     * 接入方式是纯数据：把 JSON 塞进 `notification.extras` 的 `miui.focus.param`，
+     * 支持的设备会据此渲染成岛，不支持的设备当作普通通知 —— 所以可以无条件附带。
+     *
+     * 字段含义（据澎湃 OS 开发者文档）：
+     *   · ticker       —— 状态栏焦点文案，OS2 起用于状态栏常驻显示
+     *   · islandProperty 1=信息展示为主、2=操作为主
+     *   · aodTitle     —— 息屏显示文案
+     *
+     * 已知限制：小米对焦点通知有应用白名单，未上白名单时系统可能直接忽略该参数，
+     * 退化为普通通知。这是系统侧策略，应用无法绕过。
+     *
+     * @param title 大岛标题。
+     * @param text 大岛正文。
+     * @param chip 状态栏芯片文案；为空则回退到 text。
+     * @return JSON 字符串。
+     */
+    private static String buildMiuiFocusParam(String title, String text, String chip) {
+        JSONObject island = new JSONObject();
+        try {
+            island.put("islandProperty", 1);
+            island.put("islandTimeout", 24 * 60 * 60);
+
+            JSONObject paramIsland = new JSONObject();
+            JSONObject big = new JSONObject();
+            big.put("title", title);
+            big.put("content", text);
+            JSONObject small = new JSONObject();
+            small.put("title", title);
+            paramIsland.put("bigIslandArea", big);
+            paramIsland.put("smallIslandArea", small);
+
+            JSONObject v2 = new JSONObject();
+            v2.put("param_island", paramIsland);
+            v2.put("ticker", chip == null || chip.isEmpty() ? text : chip);
+            v2.put("aodTitle", chip == null || chip.isEmpty() ? text : chip);
+
+            JSONObject root = new JSONObject();
+            root.put("param_v2", v2);
+            return root.toString();
+        } catch (JSONException e) {
+            return "";
+        }
     }
 
     /** 更新前台通知。名字不能叫 notify —— 那会与 Object.notify() 冲突。 */
     private void updateNotification(String title, String text) {
+        updateNotification(title, text, "");
+    }
+
+    /** 更新前台通知，并指定状态栏芯片文案。 */
+    private void updateNotification(String title, String text, String chip) {
         NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         if (nm != null) {
-            nm.notify(NOTIFICATION_ID, buildNotification(title, text));
+            nm.notify(NOTIFICATION_ID, buildNotification(title, text, chip));
         }
     }
 
@@ -442,6 +551,7 @@ public class HarnessService extends Service {
 
     @Override
     public void onDestroy() {
+        instance = null;
         shuttingDown = true;
         HarnessProcess.stop(this, process);
         process = null;

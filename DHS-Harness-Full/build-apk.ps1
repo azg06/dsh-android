@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 # DeepSeek Harness Full Android 打包脚本
 #
 # 把:
@@ -19,6 +19,15 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# 本机 ANSI 代码页是 GBK（ACP=gb2312），而项目路径含中文（E:\工作目录\…）。
+# PowerShell 5.1 在调用原生 exe 时默认按 ANSI 转换命令行参数，于是 aapt2 / d8 / javac
+# 收到的是"UTF-8 被当 GBK 解码"的乱码路径，表现为：
+#   E:\宸ヤ綔鐩綍\…\app\res: error: failed to open directory
+# 显式把输出编码钉成 UTF-8，避免这层有损转换。
+$OutputEncoding = New-Object Text.UTF8Encoding($false)
+try { [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false) } catch { }
+
 $projectRoot = $PSScriptRoot
 
 # payload 目录按项目位置推导（项目此前被移动过，硬编码绝对路径会失效）
@@ -66,26 +75,57 @@ Write-Host " Runtime: $RuntimeDir"
 Write-Host " Deploy : $DeployDir"
 Write-Host '=============================================='
 
-$buildDir = Join-Path $projectRoot 'build'
-$classesDir = Join-Path $buildDir 'classes'
-$genDir = Join-Path $buildDir 'gen'
-$dexDir = Join-Path $buildDir 'dex'
-$assetsDir = Join-Path $buildDir 'assets'
+# ── 切到项目目录，并让后续所有路径都走"相对形式" ─────────────
+# 原因（实测，非推测）：本机 ANSI 代码页是 GBK，项目路径含中文（E:\工作目录\…）。
+# PowerShell 5.1 把参数传给原生 exe 时按 ANSI 转换，于是 aapt2 / javac / d8 收到的是
+# "UTF-8 被当 GBK 解码"的乱码路径，报：
+#     E:\宸ヤ綔鐩綍\…\app\res: error: failed to open directory  (2)
+# 验证过的事实：
+#   · chcp 65001        —— 无效（不改 PowerShell 传参所用的 ACP）
+#   · Start-Process     —— 无效
+#   · 设 $OutputEncoding —— 无效
+#   · **相对路径        —— 有效**（路径不含中文字节，转换无损）
+# 所以这里 cd 进项目根，项目内的路径一律用相对形式；只有 SDK / JDK / keystore
+# 这类本身不含中文的路径才用绝对形式。
+Push-Location $projectRoot
+
+$buildDir = 'build'
+$classesDir = 'build\classes'
+$genDir = 'build\gen'
+$dexDir = 'build\dex'
+$assetsDir = 'build\assets'
+$outDirRel = 'dist'
 if (Test-Path $buildDir) { Remove-Item $buildDir -Recurse -Force }
-New-Item -ItemType Directory -Path $classesDir, $genDir, $dexDir, $assetsDir, $OutDir -Force | Out-Null
+New-Item -ItemType Directory -Path $classesDir, $genDir, $dexDir, $assetsDir, $outDirRel -Force | Out-Null
 
 $manifest = Join-Path $projectRoot 'app\AndroidManifest.xml'
 $resDir = Join-Path $projectRoot 'app\res'
 $srcDir = Join-Path $projectRoot 'app\src'
-$compiledRes = Join-Path $buildDir 'compiled-res.zip'
-$unsignedApk = Join-Path $buildDir 'app.unsigned.apk'
-$alignedApk = Join-Path $buildDir 'app.aligned.apk'
+# 传给 aapt2 / javac / d8 的版本必须是相对路径
+$manifestRel = 'app\AndroidManifest.xml'
+$resDirRel = 'app\res'
+$srcDirRel = 'app\src'
+$compiledRes = Join-Path $projectRoot 'build\compiled-res.zip'
+$compiledResRel = 'build\compiled-res.zip'
+# 每对路径都准备"绝对版"和"相对版"：
+#   绝对版 → 给 .NET API（ZipFile.Open / Get-Item）与 publish.ps1 取用；
+#   相对版 → 给外部 exe（aapt2 / javac / d8 / zipalign / apksigner / adb），
+#            必须相对，否则中文绝对路径经 ANSI 转换后变成乱码（见文件开头说明）。
+# ★ 关键区别：Push-Location 只改 PowerShell 的 $PWD，**不改 [Environment]::CurrentDirectory**，
+# 而 .NET API（[IO.File] / [ZipFile] / Get-Item）用的是后者。所以：
+#   给 .NET 的必须是绝对路径（用 $projectRoot 拼）
+#   给外部 exe 的必须是相对路径（避开中文的 ANSI 转换）
+$unsignedApk = Join-Path $projectRoot 'build\app.unsigned.apk'
+$alignedApk = Join-Path $projectRoot 'build\app.aligned.apk'
+$unsignedApkRel = 'build\app.unsigned.apk'
+$alignedApkRel = 'build\app.aligned.apk'
 # 产物文件名以 AndroidManifest.xml 的 versionName 为准，避免脚本与清单版本漂移
 $manifestText = [IO.File]::ReadAllText($manifest, [Text.Encoding]::UTF8)
 $versionMatch = [Regex]::Match($manifestText, 'android:versionName="([^"]+)"')
 $versionName = '0.0.0'
 if ($versionMatch.Success) { $versionName = $versionMatch.Groups[1].Value }
 $finalApk = Join-Path $OutDir ('DeepSeekHarness-Full-Android-v{0}.apk' -f $versionName)
+$finalApkRel = 'dist\DeepSeekHarness-Full-Android-v{0}.apk' -f $versionName
 
 # ---------- 0. 移植自检（有补丁缺失即中止）----------
 # 这个移植靠"就地替换 node_modules 里的若干文件"实现，历史上两次栽在"以为改了其实没改"：
@@ -132,8 +172,8 @@ function New-PayloadZip([string]$SrcDir, [string]$ZipPath, [string]$Label) {
     Write-Host "  -> $ZipPath ($mb MB)"
 }
 
-$runtimeZip = Join-Path $assetsDir 'runtime.zip'
-$payloadZip = Join-Path $assetsDir 'payload.zip'
+$runtimeZip = Join-Path $projectRoot 'build\assets\runtime.zip'
+$payloadZip = Join-Path $projectRoot 'build\assets\payload.zip'
 if (-not $SkipPayload) {
     New-PayloadZip $RuntimeDir $runtimeZip 'Android 运行时'
     New-PayloadZip $DeployDir $payloadZip 'deepseek-harness 部署'
@@ -141,31 +181,34 @@ if (-not $SkipPayload) {
 
 # ---------- 1. 资源 ----------
 Write-Host '[1/5] 编译资源 ...'
-& $aapt2 compile --dir $resDir -o $compiledRes
+& $aapt2 compile --dir $resDirRel -o $compiledResRel
 if ($LASTEXITCODE -ne 0) { throw 'aapt2 compile 失败' }
 # -A 指定 Android 的 assets 目录。
 # 之前漏了这个参数，app/assets/ 下的文件从未进过 APK —— 而且极难发现：构建一路成功、
 # APK 能装能跑，只有运行时读 assets 才抛 FileNotFoundException，表现为"功能莫名缺失"。
 # 注意别与 $assetsDir 混淆：那是 build/assets，装 runtime.zip 与 payload.zip 的中间目录。
+# -o / --manifest / --java / -A 一律用相对路径（同文件开头的 ACP 说明）；
+# 只有 $androidJar 是绝对路径，但它在 E:\android-sdk 下、不含中文，不受影响。
 $aapt2Link = @(
-    'link', '-o', $unsignedApk, '-I', $androidJar,
-    '--manifest', $manifest, '--java', $genDir,
+    'link', '-o', $unsignedApkRel, '-I', $androidJar,
+    '--manifest', $manifestRel, '--java', $genDir,
     '--min-sdk-version', '26', '--target-sdk-version', '28'
 )
-$appAssets = Join-Path $projectRoot 'app\assets'
-if (Test-Path $appAssets) {
-    $aapt2Link += @('-A', $appAssets)
-    Write-Host "  assets: $appAssets"
+if (Test-Path 'app\assets') {
+    $aapt2Link += @('-A', 'app\assets')
+    Write-Host '  assets: app\assets'
 }
-$aapt2Link += $compiledRes
+$aapt2Link += $compiledResRel
 & $aapt2 @aapt2Link
 if ($LASTEXITCODE -ne 0) { throw 'aapt2 link 失败' }
 
 # ---------- 2. javac ----------
 Write-Host '[2/5] 编译 Java ...'
+# 源文件路径也必须是相对形式：cwd 已是项目根，Resolve-Path -Relative 给出的
+# 就是项目内相对路径，从而避开中文绝对路径的 ANSI 转换问题。
 $sourceFiles = @()
-$sourceFiles += Get-ChildItem $srcDir -Recurse -Filter '*.java' | ForEach-Object { $_.FullName }
-$sourceFiles += Get-ChildItem $genDir -Recurse -Filter '*.java' | ForEach-Object { $_.FullName }
+$sourceFiles += Get-ChildItem $srcDirRel -Recurse -Filter '*.java' | ForEach-Object { Resolve-Path -Relative $_.FullName }
+$sourceFiles += Get-ChildItem $genDir -Recurse -Filter '*.java' | ForEach-Object { Resolve-Path -Relative $_.FullName }
 $javacArgs = @(
     '-encoding', 'UTF-8', '-source', '1.8', '-target', '1.8', '-Xlint:-options', '-nowarn',
     '-classpath', "$androidJar;$genDir", '-d', $classesDir
@@ -175,11 +218,12 @@ if ($LASTEXITCODE -ne 0) { throw 'javac 编译失败' }
 
 # ---------- 3. d8 ----------
 Write-Host '[3/5] 生成 dex ...'
-$classesJar = Join-Path $buildDir 'classes.jar'
+$classesJar = 'build\classes.jar'
 Push-Location $buildDir
 try {
-    & (Join-Path $javaHome 'bin\jar.exe') cf $classesJar -C $classesDir .
-    & $d8 --lib $androidJar --min-api 26 --release --output $dexDir $classesJar
+    # cwd 已是 build\，这里全部用相对名，避免中文绝对路径进入命令行
+    & (Join-Path $javaHome 'bin\jar.exe') cf 'classes.jar' -C 'classes' .
+    & $d8 --lib $androidJar --min-api 26 --release --output 'dex' 'classes.jar'
     if ($LASTEXITCODE -ne 0) { throw 'd8 失败' }
 } finally {
     Pop-Location
@@ -189,7 +233,7 @@ try {
 Write-Host '[4/5] 组装 APK（dex + payload） ...'
 $zip = [System.IO.Compression.ZipFile]::Open($unsignedApk, [System.IO.Compression.ZipArchiveMode]::Update)
 try {
-    $dexFile = Join-Path $dexDir 'classes.dex'
+    $dexFile = Join-Path $projectRoot 'build\dex\classes.dex'
     $entry = $zip.CreateEntry('classes.dex', [System.IO.Compression.CompressionLevel]::Optimal)
     $es = $entry.Open(); try { $b=[IO.File]::ReadAllBytes($dexFile); $es.Write($b,0,$b.Length) } finally { $es.Dispose() }
 
@@ -209,12 +253,12 @@ try {
 
 # ---------- 5. 对齐签名 ----------
 Write-Host '[5/5] 对齐并签名 ...'
-& $zipalign -f -p 4 $unsignedApk $alignedApk
+& $zipalign -f -p 4 $unsignedApkRel $alignedApkRel
 if ($LASTEXITCODE -ne 0) { throw 'zipalign 失败' }
 & $apksigner sign --ks $Keystore --ks-key-alias androiddebugkey --ks-pass 'pass:android' `
-    --key-pass 'pass:android' --out $finalApk $alignedApk
+    --key-pass 'pass:android' --out $finalApkRel $alignedApkRel
 if ($LASTEXITCODE -ne 0) { throw 'apksigner 失败' }
-& $apksigner verify --verbose $finalApk | Out-Null
+& $apksigner verify --verbose $finalApkRel | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'APK 校验失败' }
 
 $mb = [math]::Round((Get-Item $finalApk).Length / 1MB, 1)
@@ -224,6 +268,8 @@ Write-Host "构建成功: $finalApk ($mb MB)"
 if ($Install) {
     $adb = Join-Path $SdkPath 'platform-tools\adb.exe'
     if (-not (Test-Path $adb)) { throw '找不到 adb' }
-    & $adb install -r $finalApk
+    & $adb install -r $finalApkRel
     if ($LASTEXITCODE -ne 0) { throw 'adb install 失败' }
 }
+
+Pop-Location

@@ -212,6 +212,7 @@ public class ControlBridge {
             if ("/device/clipboard".equals(path)) return "GET".equals(method) ? clipboardRead() : clipboardWrite(req);
             if ("/device/vibrate".equals(path)) return vibrate(req);
             if ("/device/share".equals(path)) return share(req);
+            if ("/ui/status".equals(path)) return uiStatus(req);
             if ("/fs/list".equals(path)) return listDir(query);
         } catch (Exception e) {
             return error("处理失败: " + e.getMessage());
@@ -570,6 +571,37 @@ public class ControlBridge {
         return ok.toString();
     }
 
+    /**
+     * 更新前台通知，把 Agent 的工作状态显示到通知栏 / 灵动岛 / 状态栏。
+     *
+     * 请求体：{"title":"…","text":"…","chip":"…"}
+     * `chip` 是状态栏芯片文案（要极短，两三个字），缺省时回退为 text。
+     *
+     * 为什么让模型主动推：DSH 没有把"此刻在做什么"暴露成事件流，
+     * 只有模型自己清楚当前处于哪个阶段（读代码 / 跑命令 / 等确认）。
+     *
+     * @param req 请求体。
+     * @return {"ok":true}；前台服务未运行时 ok=false 并附说明。
+     */
+    private String uiStatus(JSONObject req) throws Exception {
+        String title = req.optString("title", "");
+        String text = req.optString("text", "");
+        String chip = req.optString("chip", "");
+        if (title.isEmpty() && text.isEmpty()) {
+            return error("至少需要 title 或 text 之一");
+        }
+        if (title.isEmpty()) {
+            title = "DeepSeek Harness";
+        }
+        boolean ok = HarnessService.updateStatus(title, text, chip);
+        JSONObject o = new JSONObject();
+        o.put("ok", ok);
+        if (!ok) {
+            o.put("note", "前台服务未运行，状态未展示");
+        }
+        return o.toString();
+    }
+
     private String listDir(String query) throws Exception {
         String p = "";
         for (String kv : query.split("&")) {
@@ -619,6 +651,9 @@ public class ControlBridge {
                 .put("GET  /device/clipboard · POST /device/clipboard {\"text\":\"…\"}")
                 .put("POST /device/vibrate {\"ms\":240}")
                 .put("POST /device/share {\"text\":\"…\"}"));
+        o.put("ui", new JSONArray()
+                .put("POST /ui/status {\"title\":\"…\",\"text\":\"…\",\"chip\":\"…\"} —— "
+                        + "把当前工作状态显示到通知栏/灵动岛/状态栏；chip 是状态栏芯片文案，要极短"));
         o.put("fs", new JSONArray().put("GET /fs/list?path=<dir>"));
         return o.toString();
     }
